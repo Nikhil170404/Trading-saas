@@ -74,6 +74,39 @@ const validateApiKeys = () => {
   return missing.length === 0;
 };
 
+// Enhanced API configuration with proper headers for real APIs
+const getApiHeaders = (type) => {
+  const baseHeaders = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Accept': 'application/json',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Cache-Control': 'no-cache',
+    'Pragma': 'no-cache'
+  };
+
+  switch (type) {
+    case 'yahoo':
+      return {
+        ...baseHeaders,
+        'Referer': 'https://finance.yahoo.com/',
+        'Origin': 'https://finance.yahoo.com'
+      };
+    case 'alphavantage':
+      return {
+        ...baseHeaders,
+        'Referer': 'https://www.alphavantage.co/'
+      };
+    case 'finnhub':
+      return {
+        ...baseHeaders,
+        'Referer': 'https://finnhub.io/'
+      };
+    default:
+      return baseHeaders;
+  }
+};
+
 // ===== ENHANCED ERROR HANDLING =====
 
 const handleApiError = (error, res, source, details = {}) => {
@@ -125,10 +158,10 @@ const handleApiError = (error, res, source, details = {}) => {
 
 const cache = new Map();
 const CACHE_DURATIONS = {
-  STOCK_DATA: 5 * 60 * 1000,      // 5 minutes
-  NEWS_DATA: 30 * 60 * 1000,     // 30 minutes
-  SEARCH_DATA: 60 * 60 * 1000,   // 1 hour
-  CHART_DATA: 10 * 60 * 1000     // 10 minutes
+  STOCK_DATA: 2 * 60 * 1000,      // 2 minutes
+  NEWS_DATA: 15 * 60 * 1000,     // 15 minutes
+  SEARCH_DATA: 30 * 60 * 1000,   // 30 minutes
+  CHART_DATA: 5 * 60 * 1000      // 5 minutes
 };
 
 const cacheMiddleware = (duration) => (req, res, next) => {
@@ -140,7 +173,6 @@ const cacheMiddleware = (duration) => (req, res, next) => {
     return res.json(cached.data);
   }
   
-  // Override res.json to cache the response
   const originalJson = res.json;
   res.json = function(data) {
     if (res.statusCode === 200) {
@@ -165,9 +197,9 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000); // Clean every 5 minutes
 
-// ===== ENHANCED STOCK DATA ENDPOINTS =====
+// ===== REAL API IMPLEMENTATIONS =====
 
-// Multiple stock data with intelligent fallback
+// Multiple stock data with intelligent fallback between real APIs
 app.post('/api/stocks/batch', cacheMiddleware(CACHE_DURATIONS.STOCK_DATA), async (req, res) => {
   try {
     const { symbols, source = 'auto' } = req.body;
@@ -192,8 +224,8 @@ app.post('/api/stocks/batch', cacheMiddleware(CACHE_DURATIONS.STOCK_DATA), async
     const errors = [];
     let successfulRequests = 0;
     
-    // Try different sources in order of preference
-    const sources = source === 'auto' ? ['alpha_vantage', 'yahoo', 'finnhub'] : [source];
+    // Try different real API sources in order of preference
+    const sources = source === 'auto' ? ['finnhub', 'alpha_vantage', 'polygon'] : [source];
     
     for (const currentSource of sources) {
       if (successfulRequests >= symbols.length) break;
@@ -208,14 +240,14 @@ app.post('/api/stocks/batch', cacheMiddleware(CACHE_DURATIONS.STOCK_DATA), async
         let sourceResults = [];
         
         switch (currentSource) {
+          case 'finnhub':
+            sourceResults = await fetchFromFinnhub(remainingSymbols);
+            break;
           case 'alpha_vantage':
             sourceResults = await fetchFromAlphaVantage(remainingSymbols);
             break;
-          case 'yahoo':
-            sourceResults = await fetchFromYahoo(remainingSymbols);
-            break;
-          case 'finnhub':
-            sourceResults = await fetchFromFinnhub(remainingSymbols);
+          case 'polygon':
+            sourceResults = await fetchFromPolygon(remainingSymbols);
             break;
           default:
             throw new Error(`Unknown source: ${currentSource}`);
@@ -234,6 +266,15 @@ app.post('/api/stocks/batch', cacheMiddleware(CACHE_DURATIONS.STOCK_DATA), async
           symbols: remainingSymbols
         });
       }
+    }
+    
+    if (results.length === 0) {
+      return res.status(503).json({
+        error: 'All stock data sources failed',
+        message: 'Unable to fetch stock data from any API provider',
+        errors: errors,
+        retryAfter: 60
+      });
     }
     
     // Enhance results with additional data
@@ -257,116 +298,7 @@ app.post('/api/stocks/batch', cacheMiddleware(CACHE_DURATIONS.STOCK_DATA), async
   }
 });
 
-// Alpha Vantage implementation
-async function fetchFromAlphaVantage(symbols) {
-  if (!API_KEYS.ALPHA_VANTAGE) {
-    throw new Error('Alpha Vantage API key not configured');
-  }
-  
-  const results = [];
-  
-  // Process symbols with rate limiting (5 per minute)
-  for (let i = 0; i < Math.min(symbols.length, 5); i++) {
-    const symbol = symbols[i];
-    
-    try {
-      const response = await axios.get('https://www.alphavantage.co/query', {
-        params: {
-          function: 'GLOBAL_QUOTE',
-          symbol: `${symbol}.BSE`,
-          apikey: API_KEYS.ALPHA_VANTAGE
-        },
-        timeout: 10000
-      });
-      
-      const quote = response.data['Global Quote'];
-      
-      if (quote && quote['01. symbol']) {
-        const price = parseFloat(quote['05. price']) || 0;
-        const previousClose = parseFloat(quote['08. previous close']) || 0;
-        const change = price - previousClose;
-        const changePercent = previousClose ? (change / previousClose) * 100 : 0;
-        
-        results.push({
-          symbol: symbol,
-          name: getCompanyName(symbol),
-          price: Math.round(price * 100) / 100,
-          change: Math.round(change * 100) / 100,
-          changePercent: Math.round(changePercent * 100) / 100,
-          volume: parseInt(quote['06. volume']) || 0,
-          high: parseFloat(quote['03. high']) || price,
-          low: parseFloat(quote['04. low']) || price,
-          open: parseFloat(quote['02. open']) || previousClose,
-          previousClose: previousClose,
-          source: 'Alpha Vantage'
-        });
-      }
-      
-      // Rate limiting delay
-      if (i < symbols.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, 12000)); // 12 seconds between calls
-      }
-      
-    } catch (error) {
-      console.warn(`Alpha Vantage failed for ${symbol}:`, error.message);
-    }
-  }
-  
-  return results;
-}
-
-// Yahoo Finance implementation
-async function fetchFromYahoo(symbols) {
-  const results = [];
-  
-  for (const symbol of symbols) {
-    try {
-      const yahooSymbol = `${symbol}.NS`; // NSE suffix for Indian stocks
-      const response = await axios.get(`https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}`, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-          'Accept': 'application/json',
-          'Accept-Language': 'en-US,en;q=0.9'
-        },
-        timeout: 8000
-      });
-      
-      const result = response.data.chart?.result?.[0];
-      
-      if (result && result.meta) {
-        const meta = result.meta;
-        const currentPrice = meta.regularMarketPrice || meta.previousClose || 0;
-        const previousClose = meta.previousClose || 0;
-        const change = currentPrice - previousClose;
-        const changePercent = previousClose ? (change / previousClose) * 100 : 0;
-        
-        results.push({
-          symbol: symbol,
-          name: getCompanyName(symbol),
-          price: Math.round(currentPrice * 100) / 100,
-          change: Math.round(change * 100) / 100,
-          changePercent: Math.round(changePercent * 100) / 100,
-          volume: meta.regularMarketVolume || 0,
-          high: meta.regularMarketDayHigh || currentPrice,
-          low: meta.regularMarketDayLow || currentPrice,
-          open: meta.regularMarketOpen || previousClose,
-          previousClose: previousClose,
-          source: 'Yahoo Finance'
-        });
-      }
-      
-      // Small delay to be respectful
-      await new Promise(resolve => setTimeout(resolve, 100));
-      
-    } catch (error) {
-      console.warn(`Yahoo Finance failed for ${symbol}:`, error.message);
-    }
-  }
-  
-  return results;
-}
-
-// Finnhub implementation
+// Finnhub implementation (Primary - most reliable for real-time data)
 async function fetchFromFinnhub(symbols) {
   if (!API_KEYS.FINNHUB) {
     throw new Error('Finnhub API key not configured');
@@ -374,13 +306,14 @@ async function fetchFromFinnhub(symbols) {
   
   const results = [];
   
-  for (const symbol of symbols) {
+  for (const symbol of symbols.slice(0, 10)) { // Limit for rate limits
     try {
       const response = await axios.get('https://finnhub.io/api/v1/quote', {
         params: {
           symbol: symbol,
           token: API_KEYS.FINNHUB
         },
+        headers: getApiHeaders('finnhub'),
         timeout: 8000
       });
       
@@ -413,7 +346,108 @@ async function fetchFromFinnhub(symbols) {
   return results;
 }
 
-// ===== ENHANCED NEWS ENDPOINTS =====
+// Alpha Vantage implementation (Secondary)
+async function fetchFromAlphaVantage(symbols) {
+  if (!API_KEYS.ALPHA_VANTAGE) {
+    throw new Error('Alpha Vantage API key not configured');
+  }
+  
+  const results = [];
+  
+  for (const symbol of symbols.slice(0, 5)) { // Limit to avoid rate limits
+    try {
+      const response = await axios.get('https://www.alphavantage.co/query', {
+        params: {
+          function: 'GLOBAL_QUOTE',
+          symbol: `${symbol}.BSE`,
+          apikey: API_KEYS.ALPHA_VANTAGE
+        },
+        headers: getApiHeaders('alphavantage'),
+        timeout: 10000
+      });
+      
+      const quote = response.data['Global Quote'];
+      
+      if (quote && quote['01. symbol']) {
+        const price = parseFloat(quote['05. price']) || 0;
+        const previousClose = parseFloat(quote['08. previous close']) || 0;
+        const change = price - previousClose;
+        const changePercent = previousClose ? (change / previousClose) * 100 : 0;
+        
+        results.push({
+          symbol: symbol,
+          name: getCompanyName(symbol),
+          price: Math.round(price * 100) / 100,
+          change: Math.round(change * 100) / 100,
+          changePercent: Math.round(changePercent * 100) / 100,
+          volume: parseInt(quote['06. volume']) || 0,
+          high: parseFloat(quote['03. high']) || price,
+          low: parseFloat(quote['04. low']) || price,
+          open: parseFloat(quote['02. open']) || previousClose,
+          previousClose: previousClose,
+          source: 'Alpha Vantage'
+        });
+      }
+      
+      // Rate limiting delay
+      await new Promise(resolve => setTimeout(resolve, 12000)); // 12 seconds between calls
+      
+    } catch (error) {
+      console.warn(`Alpha Vantage failed for ${symbol}:`, error.message);
+    }
+  }
+  
+  return results;
+}
+
+// Polygon implementation (Tertiary)
+async function fetchFromPolygon(symbols) {
+  if (!API_KEYS.POLYGON) {
+    throw new Error('Polygon API key not configured');
+  }
+  
+  const results = [];
+  
+  for (const symbol of symbols.slice(0, 10)) {
+    try {
+      const response = await axios.get(`https://api.polygon.io/v2/last/trade/${symbol}`, {
+        params: {
+          apikey: API_KEYS.POLYGON
+        },
+        headers: getApiHeaders('polygon'),
+        timeout: 8000
+      });
+      
+      const data = response.data;
+      
+      if (data.status === 'OK' && data.results) {
+        const result = data.results;
+        results.push({
+          symbol: symbol,
+          name: getCompanyName(symbol),
+          price: Math.round((result.p || 0) * 100) / 100,
+          change: 0, // Polygon last trade doesn't include change
+          changePercent: 0,
+          volume: result.s || 0,
+          high: Math.round((result.p || 0) * 100) / 100,
+          low: Math.round((result.p || 0) * 100) / 100,
+          open: Math.round((result.p || 0) * 100) / 100,
+          previousClose: Math.round((result.p || 0) * 100) / 100,
+          source: 'Polygon'
+        });
+      }
+      
+      await new Promise(resolve => setTimeout(resolve, 300));
+      
+    } catch (error) {
+      console.warn(`Polygon failed for ${symbol}:`, error.message);
+    }
+  }
+  
+  return results;
+}
+
+// ===== REAL NEWS ENDPOINTS =====
 
 app.get('/api/news', cacheMiddleware(CACHE_DURATIONS.NEWS_DATA), async (req, res) => {
   try {
@@ -440,7 +474,7 @@ app.get('/api/news', cacheMiddleware(CACHE_DURATIONS.NEWS_DATA), async (req, res
         q: q + ' AND (stock OR market OR trading OR finance)',
         language,
         sortBy,
-        pageSize: Math.min(parseInt(pageSize), 20), // Limit to 20 articles
+        pageSize: Math.min(parseInt(pageSize), 20),
         apiKey: API_KEYS.NEWS_API,
         domains: 'bloomberg.com,reuters.com,cnbc.com,marketwatch.com,economictimes.indiatimes.com,business-standard.com,moneycontrol.com'
       },
@@ -482,54 +516,118 @@ app.get('/api/news', cacheMiddleware(CACHE_DURATIONS.NEWS_DATA), async (req, res
   }
 });
 
-// Financial news from Alpha Vantage
-app.get('/api/news/financial', cacheMiddleware(CACHE_DURATIONS.NEWS_DATA), async (req, res) => {
+// ===== REAL CHART DATA ENDPOINT =====
+
+app.get('/api/chart/:symbol', cacheMiddleware(CACHE_DURATIONS.CHART_DATA), async (req, res) => {
   try {
-    const { topics = 'technology,finance', sort = 'LATEST', limit = 20 } = req.query;
+    const { symbol } = req.params;
+    const { interval = '15min', outputsize = 'compact' } = req.query;
     
-    if (!API_KEYS.ALPHA_VANTAGE) {
-      return res.status(503).json({
-        error: 'Alpha Vantage API not configured',
-        message: 'Alpha Vantage API key is not available'
+    console.log(`📊 Fetching chart data for ${symbol}`);
+    
+    let chartData = null;
+    
+    // Try Finnhub first for chart data
+    if (API_KEYS.FINNHUB) {
+      try {
+        const endTime = Math.floor(Date.now() / 1000);
+        const startTime = endTime - (24 * 60 * 60); // 24 hours ago
+        
+        const response = await axios.get('https://finnhub.io/api/v1/stock/candle', {
+          params: {
+            symbol: symbol,
+            resolution: '15',
+            from: startTime,
+            to: endTime,
+            token: API_KEYS.FINNHUB
+          },
+          headers: getApiHeaders('finnhub'),
+          timeout: 10000
+        });
+        
+        const data = response.data;
+        
+        if (data.s === 'ok' && data.t && data.t.length > 0) {
+          chartData = data.t.map((timestamp, index) => ({
+            timestamp: timestamp * 1000,
+            time: new Date(timestamp * 1000).toLocaleTimeString('en-US', { 
+              hour: '2-digit', 
+              minute: '2-digit' 
+            }),
+            open: data.o[index],
+            high: data.h[index],
+            low: data.l[index],
+            close: data.c[index],
+            volume: data.v[index]
+          }));
+          
+          console.log(`✅ Got chart data from Finnhub for ${symbol}`);
+        }
+      } catch (error) {
+        console.warn(`Finnhub chart failed for ${symbol}:`, error.message);
+      }
+    }
+    
+    // Try Alpha Vantage as fallback
+    if (!chartData && API_KEYS.ALPHA_VANTAGE) {
+      try {
+        const response = await axios.get('https://www.alphavantage.co/query', {
+          params: {
+            function: 'TIME_SERIES_INTRADAY',
+            symbol: `${symbol}.BSE`,
+            interval,
+            outputsize,
+            apikey: API_KEYS.ALPHA_VANTAGE
+          },
+          headers: getApiHeaders('alphavantage'),
+          timeout: 15000
+        });
+        
+        const timeSeries = response.data[`Time Series (${interval})`];
+        
+        if (timeSeries) {
+          chartData = Object.entries(timeSeries)
+            .slice(0, 100)
+            .reverse()
+            .map(([timestamp, values]) => ({
+              timestamp: new Date(timestamp).getTime(),
+              time: new Date(timestamp).toLocaleTimeString('en-US', { 
+                hour: '2-digit', 
+                minute: '2-digit' 
+              }),
+              open: parseFloat(values['1. open']),
+              high: parseFloat(values['2. high']),
+              low: parseFloat(values['3. low']),
+              close: parseFloat(values['4. close']),
+              volume: parseInt(values['5. volume'])
+            }));
+          
+          console.log(`✅ Got chart data from Alpha Vantage for ${symbol}`);
+        }
+      } catch (error) {
+        console.warn(`Alpha Vantage chart failed for ${symbol}:`, error.message);
+      }
+    }
+    
+    if (!chartData || chartData.length === 0) {
+      return res.status(404).json({
+        error: 'No chart data found',
+        message: `No chart data available for ${symbol} from any API provider`,
+        symbol: symbol
       });
     }
     
-    console.log(`📈 Fetching financial news for topics: ${topics}`);
-    
-    const response = await axios.get('https://www.alphavantage.co/query', {
-      params: {
-        function: 'NEWS_SENTIMENT',
-        topics,
-        sort,
-        limit: Math.min(parseInt(limit), 50),
-        apikey: API_KEYS.ALPHA_VANTAGE
-      },
-      timeout: 15000
-    });
-    
-    if (response.data['Error Message']) {
-      throw new Error(response.data['Error Message']);
-    }
-    
-    const feed = response.data.feed || [];
-    
     res.json({
       status: 'ok',
-      totalResults: feed.length,
-      articles: feed.map(item => ({
-        title: item.title,
-        description: item.summary,
-        url: item.url,
-        source: item.source,
-        publishedAt: item.time_published,
-        sentiment: item.overall_sentiment_label,
-        relevanceScore: item.relevance_score
-      })),
+      symbol,
+      interval,
+      data: chartData,
+      lastRefreshed: new Date().toISOString(),
       timestamp: new Date().toISOString()
     });
     
   } catch (error) {
-    handleApiError(error, res, 'Financial News API', { topics: req.query.topics });
+    handleApiError(error, res, 'Chart API', { symbol: req.params.symbol });
   }
 });
 
@@ -561,6 +659,7 @@ app.get('/api/search/stocks', cacheMiddleware(CACHE_DURATIONS.SEARCH_DATA), asyn
         keywords: q,
         apikey: API_KEYS.ALPHA_VANTAGE
       },
+      headers: getApiHeaders('alphavantage'),
       timeout: 10000
     });
     
@@ -589,76 +688,6 @@ app.get('/api/search/stocks', cacheMiddleware(CACHE_DURATIONS.SEARCH_DATA), asyn
     
   } catch (error) {
     handleApiError(error, res, 'Search API', { query: req.query.q });
-  }
-});
-
-// ===== CHART DATA ENDPOINT =====
-
-app.get('/api/chart/:symbol', cacheMiddleware(CACHE_DURATIONS.CHART_DATA), async (req, res) => {
-  try {
-    const { symbol } = req.params;
-    const { interval = '15min', outputsize = 'compact' } = req.query;
-    
-    if (!API_KEYS.ALPHA_VANTAGE) {
-      return res.status(503).json({
-        error: 'Chart API not configured',
-        message: 'Alpha Vantage API key required for chart data'
-      });
-    }
-    
-    console.log(`📊 Fetching chart data for ${symbol}`);
-    
-    const response = await axios.get('https://www.alphavantage.co/query', {
-      params: {
-        function: 'TIME_SERIES_INTRADAY',
-        symbol: `${symbol}.BSE`,
-        interval,
-        outputsize,
-        apikey: API_KEYS.ALPHA_VANTAGE
-      },
-      timeout: 15000
-    });
-    
-    if (response.data['Error Message']) {
-      throw new Error(response.data['Error Message']);
-    }
-    
-    const timeSeries = response.data[`Time Series (${interval})`];
-    
-    if (!timeSeries) {
-      return res.status(404).json({
-        error: 'No chart data found',
-        message: `No intraday data available for ${symbol}`
-      });
-    }
-    
-    const chartData = Object.entries(timeSeries)
-      .slice(0, 100) // Limit to 100 data points
-      .reverse() // Chronological order
-      .map(([timestamp, values]) => ({
-        timestamp: new Date(timestamp).getTime(),
-        time: new Date(timestamp).toLocaleTimeString('en-US', { 
-          hour: '2-digit', 
-          minute: '2-digit' 
-        }),
-        open: parseFloat(values['1. open']),
-        high: parseFloat(values['2. high']),
-        low: parseFloat(values['3. low']),
-        close: parseFloat(values['4. close']),
-        volume: parseInt(values['5. volume'])
-      }));
-    
-    res.json({
-      status: 'ok',
-      symbol,
-      interval,
-      data: chartData,
-      lastRefreshed: response.data['Meta Data']['3. Last Refreshed'],
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    handleApiError(error, res, 'Chart API', { symbol: req.params.symbol });
   }
 });
 
@@ -733,7 +762,7 @@ app.get('/api/health', (req, res) => {
     status: 'OK',
     message: 'TradePro Backend API is running',
     timestamp: new Date().toISOString(),
-    version: '2.0.0',
+    version: '2.1.0',
     environment: process.env.NODE_ENV || 'development',
     uptime: Math.floor(process.uptime()),
     apiKeys: apiKeysStatus,
@@ -744,7 +773,7 @@ app.get('/api/health', (req, res) => {
     features: {
       stockData: true,
       newsData: !!API_KEYS.NEWS_API,
-      chartData: !!API_KEYS.ALPHA_VANTAGE,
+      chartData: !!(API_KEYS.ALPHA_VANTAGE || API_KEYS.FINNHUB),
       search: !!API_KEYS.ALPHA_VANTAGE,
       marketStatus: true
     }
@@ -838,7 +867,6 @@ app.use((req, res) => {
       'GET /api/health',
       'POST /api/stocks/batch',
       'GET /api/news',
-      'GET /api/news/financial',
       'GET /api/search/stocks',
       'GET /api/chart/:symbol',
       'GET /api/market/status'
@@ -860,11 +888,7 @@ app.use((error, req, res, next) => {
 
 const gracefulShutdown = (signal) => {
   console.log(`\n🛑 Received ${signal}. Starting graceful shutdown...`);
-  
-  // Clear cache
   cache.clear();
-  
-  // Close server
   process.exit(0);
 };
 
@@ -874,7 +898,7 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 // ===== START SERVER =====
 
 const server = app.listen(PORT, () => {
-  console.log(`🚀 TradePro Backend Server v2.0.0 running on port ${PORT}`);
+  console.log(`🚀 TradePro Backend Server v2.1.0 running on port ${PORT}`);
   console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🌐 API Base URL: http://localhost:${PORT}/api`);
   console.log(`💾 Cache enabled with ${Object.keys(CACHE_DURATIONS).length} strategies`);
@@ -886,8 +910,7 @@ const server = app.listen(PORT, () => {
   console.log('\n📋 Available Endpoints:');
   console.log('  ✅ GET  /api/health - Health check');
   console.log('  ✅ POST /api/stocks/batch - Batch stock data');
-  console.log('  ✅ GET  /api/news - General news');
-  console.log('  ✅ GET  /api/news/financial - Financial news');
+  console.log('  ✅ GET  /api/news - Financial news');
   console.log('  ✅ GET  /api/search/stocks - Stock search');
   console.log('  ✅ GET  /api/chart/:symbol - Chart data');
   console.log('  ✅ GET  /api/market/status - Market status');
@@ -900,7 +923,7 @@ const server = app.listen(PORT, () => {
     });
   }
   
-  console.log('\n🔥 Server ready to handle requests!');
+  console.log('\n🔥 Server ready to handle real API requests!');
 });
 
 // Handle server errors

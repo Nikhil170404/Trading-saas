@@ -9,10 +9,10 @@ import {
 } from '../utils/helpers';
 
 /**
- * Real Data API Service - No Mock Data
+ * Enhanced Real Data API Service - No Mock Data
  * Fetches live data from multiple financial APIs with intelligent fallbacks
  */
-class RealAPIService {
+class EnhancedRealAPIService {
   constructor() {
     this.cache = new Map();
     this.isOnline = navigator.onLine;
@@ -23,6 +23,8 @@ class RealAPIService {
     // WebSocket for real-time data
     this.websocket = null;
     this.wsCallbacks = new Map();
+    this.wsReconnectAttempts = 0;
+    this.maxReconnectAttempts = 5;
     
     this.setupNetworkMonitoring();
     this.loadCacheFromStorage();
@@ -31,38 +33,38 @@ class RealAPIService {
     this.setupWebSocket();
     
     console.log('🚀 Enhanced Real Data API Service initialized');
-    console.log('📡 Features: Multiple API fallbacks, intelligent retry, synthetic data generation');
-    console.log('🛡️ Error handling: Graceful degradation, placeholder content, data quality assessment');
-    console.log('⚡ Performance: Rate limiting, caching, WebSocket alternative polling');
-    console.log('✅ Ready to fetch live financial data with 99.9% uptime guarantee');
+    console.log('📡 Features: Real APIs only, intelligent fallbacks, enhanced error handling');
+    console.log('🛡️ Error handling: Graceful degradation, comprehensive retry logic');
+    console.log('⚡ Performance: Optimized caching, rate limiting, WebSocket connectivity');
+    console.log('✅ Ready to fetch live financial data from real APIs');
   }
 
   /**
    * Initialize rate limiters for different APIs
    */
   initializeRateLimiters() {
-    // Alpha Vantage: 5 calls per minute
-    this.rateLimiters.set('alphavantage', createRateLimiter(5, 60000));
+    // Backend API: 100 calls per minute
+    this.rateLimiters.set('backend', createRateLimiter(100, 60000));
     
-    // News API: 100 calls per day
-    this.rateLimiters.set('news', createRateLimiter(100, 86400000));
-    
-    // Yahoo Finance: No official limits, but be conservative
-    this.rateLimiters.set('yahoo', createRateLimiter(60, 60000));
-    
-    // Finnhub: 60 calls per minute
-    this.rateLimiters.set('finnhub', createRateLimiter(60, 60000));
+    // Finnhub WebSocket: Connection management
+    this.rateLimiters.set('websocket', createRateLimiter(1, 1000));
   }
 
   /**
    * Setup WebSocket connection for real-time data
    */
   setupWebSocket() {
+    if (this.wsReconnectAttempts >= this.maxReconnectAttempts) {
+      console.warn('📡 Max WebSocket reconnection attempts reached');
+      return;
+    }
+
     try {
       this.websocket = new WebSocket('wss://ws.finnhub.io?token=d1n8t71r01qovv8hp8mgd1n8t71r01qovv8hp8n0');
       
       this.websocket.onopen = () => {
         console.log('📡 WebSocket connected for real-time data');
+        this.wsReconnectAttempts = 0;
         
         // Subscribe to popular stocks
         const symbols = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA'];
@@ -78,7 +80,6 @@ class RealAPIService {
         try {
           const data = JSON.parse(event.data);
           if (data.type === 'trade') {
-            // Handle real-time price updates
             this.handleRealTimeUpdate(data);
           }
         } catch (error) {
@@ -86,9 +87,14 @@ class RealAPIService {
         }
       };
 
-      this.websocket.onclose = () => {
-        console.log('📡 WebSocket disconnected, attempting to reconnect...');
-        setTimeout(() => this.setupWebSocket(), 5000);
+      this.websocket.onclose = (event) => {
+        console.log(`📡 WebSocket disconnected (code: ${event.code})`);
+        this.wsReconnectAttempts++;
+        
+        if (this.wsReconnectAttempts < this.maxReconnectAttempts) {
+          const delay = Math.min(1000 * Math.pow(2, this.wsReconnectAttempts), 30000);
+          setTimeout(() => this.setupWebSocket(), delay);
+        }
       };
 
       this.websocket.onerror = (error) => {
@@ -96,6 +102,7 @@ class RealAPIService {
       };
     } catch (error) {
       console.warn('WebSocket setup failed:', error);
+      this.wsReconnectAttempts++;
     }
   }
 
@@ -136,10 +143,15 @@ class RealAPIService {
    */
   async checkBackendHealth() {
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      
       const response = await fetch(`${this.baseURL}/health`, { 
         method: 'GET',
-        timeout: 5000 
+        signal: controller.signal
       });
+      
+      clearTimeout(timeoutId);
       
       if (response.ok) {
         const data = await response.json();
@@ -147,7 +159,11 @@ class RealAPIService {
         return true;
       }
     } catch (error) {
-      console.warn('⚠️ Backend server not available, using direct API calls');
+      if (error.name === 'AbortError') {
+        console.warn('⚠️ Backend health check timeout');
+      } else {
+        console.warn('⚠️ Backend server not available:', error.message);
+      }
     }
     return false;
   }
@@ -160,11 +176,12 @@ class RealAPIService {
       this.isOnline = true;
       console.log('📡 Back online - resuming API calls');
       this.setupWebSocket(); // Reconnect WebSocket
+      this.checkBackendHealth();
     });
 
     window.addEventListener('offline', () => {
       this.isOnline = false;
-      console.log('📡 Offline - using cached data');
+      console.log('📡 Offline - using cached data only');
       if (this.websocket) {
         this.websocket.close();
       }
@@ -177,12 +194,16 @@ class RealAPIService {
   loadCacheFromStorage() {
     try {
       const savedCache = storage.get('realApiCache', {});
+      let loadedCount = 0;
+      
       Object.entries(savedCache).forEach(([key, value]) => {
         if (value.timestamp && Date.now() - value.timestamp < value.duration) {
           this.cache.set(key, value);
+          loadedCount++;
         }
       });
-      console.log(`📦 Loaded ${Object.keys(savedCache).length} cached items`);
+      
+      console.log(`📦 Loaded ${loadedCount} cached items from storage`);
     } catch (error) {
       console.warn('Cache loading failed:', error);
     }
@@ -229,18 +250,32 @@ class RealAPIService {
   }
 
   /**
-   * Make rate-limited API request
+   * Make rate-limited API request with enhanced error handling
    */
-  async makeRateLimitedRequest(apiType, requestFn) {
+  async makeRateLimitedRequest(apiType, requestFn, retries = 3) {
     const rateLimiter = this.rateLimiters.get(apiType);
     if (rateLimiter) {
       await rateLimiter();
     }
-    return await requestFn();
+
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      try {
+        return await requestFn();
+      } catch (error) {
+        if (attempt === retries) {
+          throw error;
+        }
+        
+        // Exponential backoff for retries
+        const delay = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
+        console.warn(`Attempt ${attempt} failed, retrying in ${delay}ms:`, error.message);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
   }
 
   /**
-   * Fetch stock data with multiple API fallbacks
+   * Enhanced fetch stock data with comprehensive error handling
    */
   async getStockData(symbols = STOCK_SYMBOLS.INDIAN.slice(0, 10)) {
     const cacheKey = `stocks_${symbols.join('_')}`;
@@ -251,64 +286,44 @@ class RealAPIService {
     }
 
     if (!this.isOnline) {
-      throw new Error('No internet connection');
+      throw new Error('No internet connection available');
     }
 
     try {
       console.log(`📈 Fetching real stock data for ${symbols.length} symbols...`);
       
-      // Try multiple data sources in order of preference
-      let stockData = null;
-      
-      // 1. Try backend API first
-      try {
-        stockData = await this.getStockDataFromBackend(symbols);
-        if (stockData && stockData.length > 0) {
-          console.log('✅ Got data from backend API');
-        }
-      } catch (error) {
-        console.warn('Backend API failed:', error.message);
-      }
+      const stockData = await this.makeRateLimitedRequest('backend', async () => {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
+        
+        const response = await fetch(`${this.baseURL}/stocks/batch`, {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
+          body: JSON.stringify({ 
+            symbols, 
+            source: 'auto' // Let backend choose best API
+          }),
+          signal: controller.signal
+        });
+        
+        clearTimeout(timeoutId);
 
-      // 2. Try Alpha Vantage for Indian stocks
-      if (!stockData && symbols.some(s => STOCK_SYMBOLS.INDIAN.includes(s))) {
-        try {
-          stockData = await this.getStockDataFromAlphaVantage(symbols);
-          if (stockData && stockData.length > 0) {
-            console.log('✅ Got data from Alpha Vantage');
-          }
-        } catch (error) {
-          console.warn('Alpha Vantage API failed:', error.message);
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.message || `Backend API error: ${response.status}`);
         }
-      }
-
-      // 3. Try Yahoo Finance
-      if (!stockData) {
-        try {
-          stockData = await this.getStockDataFromYahoo(symbols);
-          if (stockData && stockData.length > 0) {
-            console.log('✅ Got data from Yahoo Finance');
-          }
-        } catch (error) {
-          console.warn('Yahoo Finance API failed:', error.message);
+        
+        const data = await response.json();
+        
+        if (!data.success || !data.data || data.data.length === 0) {
+          throw new Error('No stock data received from backend');
         }
-      }
-
-      // 4. Try Finnhub
-      if (!stockData) {
-        try {
-          stockData = await this.getStockDataFromFinnhub(symbols);
-          if (stockData && stockData.length > 0) {
-            console.log('✅ Got data from Finnhub');
-          }
-        } catch (error) {
-          console.warn('Finnhub API failed:', error.message);
-        }
-      }
-
-      if (!stockData || stockData.length === 0) {
-        throw new Error('All stock data sources failed');
-      }
+        
+        return data.data;
+      });
 
       // Process and enhance the data
       const processedData = await this.processStockData(stockData);
@@ -321,191 +336,26 @@ class RealAPIService {
 
     } catch (error) {
       errorHandler.log(error, 'fetching real stock data');
-      throw new Error(`Failed to fetch stock data: ${error.message}`);
-    }
-  }
-
-  /**
-   * Get stock data from backend
-   */
-  async getStockDataFromBackend(symbols) {
-    return await this.makeRateLimitedRequest('backend', async () => {
-      const response = await fetch(`${this.baseURL}/stocks/batch`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbols, source: 'alpha_vantage' })
-      });
-
-      if (!response.ok) {
-        throw new Error(`Backend API error: ${response.status}`);
+      
+      // If network error or API down, check if we have any cached data
+      const fallbackCache = storage.get('lastKnownStockData', null);
+      if (fallbackCache && Date.now() - fallbackCache.timestamp < 24 * 60 * 60 * 1000) { // 24 hours
+        console.warn('Using fallback cached data due to API failure');
+        return fallbackCache.data;
       }
       
-      const data = await response.json();
-      return data.success ? data.data : null;
-    });
-  }
-
-  /**
-   * Get stock data from Alpha Vantage
-   */
-  async getStockDataFromAlphaVantage(symbols) {
-    const results = [];
-    
-    for (const symbol of symbols.slice(0, 5)) { // Limit to avoid rate limits
-      try {
-        await this.makeRateLimitedRequest('alphavantage', async () => {
-          const url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${symbol}.BSE&apikey=UDHV8TGEXHMKA1FP`;
-          const response = await fetch(url);
-          
-          if (!response.ok) {
-            throw new Error(`Alpha Vantage API error: ${response.status}`);
-          }
-          
-          const data = await response.json();
-          const quote = data['Global Quote'];
-          
-          if (quote && quote['01. symbol']) {
-            results.push({
-              symbol: symbol,
-              name: this.getCompanyName(symbol),
-              price: parseFloat(quote['05. price']) || 0,
-              change: parseFloat(quote['09. change']) || 0,
-              changePercent: parseFloat(quote['10. change percent'].replace('%', '')) || 0,
-              volume: parseInt(quote['06. volume']) || 0,
-              high: parseFloat(quote['03. high']) || 0,
-              low: parseFloat(quote['04. low']) || 0,
-              open: parseFloat(quote['02. open']) || 0,
-              previousClose: parseFloat(quote['08. previous close']) || 0,
-              lastUpdated: new Date().toISOString(),
-              source: 'Alpha Vantage'
-            });
-          }
-        });
-        
-        // Small delay to respect rate limits
-        await new Promise(resolve => setTimeout(resolve, 500));
-      } catch (error) {
-        console.warn(`Failed to fetch ${symbol} from Alpha Vantage:`, error);
-      }
+      throw new Error(`Failed to fetch stock data: ${error.message}`);
     }
-    
-    return results;
-  }
-
-  /**
-   * Get stock data from Yahoo Finance
-   */
-  async getStockDataFromYahoo(symbols) {
-    const results = [];
-    
-    for (const symbol of symbols) {
-      try {
-        await this.makeRateLimitedRequest('yahoo', async () => {
-          // Add .NS suffix for NSE stocks
-          const yahooSymbol = STOCK_SYMBOLS.INDIAN.includes(symbol) ? `${symbol}.NS` : symbol;
-          const url = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}`;
-          
-          const response = await fetch(url, {
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-              'Accept': 'application/json'
-            }
-          });
-          
-          if (!response.ok) {
-            throw new Error(`Yahoo Finance API error: ${response.status}`);
-          }
-          
-          const data = await response.json();
-          const result = data.chart?.result?.[0];
-          
-          if (result && result.meta) {
-            const meta = result.meta;
-            const currentPrice = meta.regularMarketPrice || meta.previousClose || 0;
-            const previousClose = meta.previousClose || 0;
-            const change = currentPrice - previousClose;
-            const changePercent = (change / previousClose) * 100;
-            
-            results.push({
-              symbol: symbol,
-              name: this.getCompanyName(symbol),
-              price: Math.round(currentPrice * 100) / 100,
-              change: Math.round(change * 100) / 100,
-              changePercent: Math.round(changePercent * 100) / 100,
-              volume: meta.regularMarketVolume || 0,
-              high: meta.regularMarketDayHigh || currentPrice,
-              low: meta.regularMarketDayLow || currentPrice,
-              open: meta.regularMarketOpen || previousClose,
-              previousClose: previousClose,
-              lastUpdated: new Date().toISOString(),
-              source: 'Yahoo Finance'
-            });
-          }
-        });
-        
-        // Small delay to be respectful
-        await new Promise(resolve => setTimeout(resolve, 100));
-      } catch (error) {
-        console.warn(`Failed to fetch ${symbol} from Yahoo:`, error);
-      }
-    }
-    
-    return results;
-  }
-
-  /**
-   * Get stock data from Finnhub
-   */
-  async getStockDataFromFinnhub(symbols) {
-    const results = [];
-    
-    for (const symbol of symbols.slice(0, 10)) { // Limit for rate limits
-      try {
-        await this.makeRateLimitedRequest('finnhub', async () => {
-          const url = `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=d1n8t71r01qovv8hp8mgd1n8t71r01qovv8hp8n0`;
-          const response = await fetch(url);
-          
-          if (!response.ok) {
-            throw new Error(`Finnhub API error: ${response.status}`);
-          }
-          
-          const data = await response.json();
-          
-          if (data.c) { // Current price exists
-            results.push({
-              symbol: symbol,
-              name: this.getCompanyName(symbol),
-              price: data.c,
-              change: data.d,
-              changePercent: data.dp,
-              volume: 0, // Finnhub doesn't provide volume in quote endpoint
-              high: data.h,
-              low: data.l,
-              open: data.o,
-              previousClose: data.pc,
-              lastUpdated: new Date().toISOString(),
-              source: 'Finnhub'
-            });
-          }
-        });
-        
-        await new Promise(resolve => setTimeout(resolve, 200));
-      } catch (error) {
-        console.warn(`Failed to fetch ${symbol} from Finnhub:`, error);
-      }
-    }
-    
-    return results;
   }
 
   /**
    * Process and enhance stock data
    */
   async processStockData(stockData) {
-    return stockData.map(stock => ({
+    const enhancedData = stockData.map(stock => ({
       ...stock,
       // Add technical indicators
-      recommendation: this.generateRecommendation(stock),
+      recommendation: stock.recommendation || this.generateRecommendation(stock),
       marketCap: this.calculateMarketCap(stock.symbol, stock.price),
       pe: this.estimatePERatio(stock.symbol),
       dividend: this.estimateDividendYield(stock.symbol),
@@ -522,10 +372,18 @@ class RealAPIService {
       open: Math.round(stock.open * 100) / 100,
       previousClose: Math.round(stock.previousClose * 100) / 100
     }));
+
+    // Store as fallback cache
+    storage.set('lastKnownStockData', {
+      data: enhancedData,
+      timestamp: Date.now()
+    });
+
+    return enhancedData;
   }
 
   /**
-   * Get real news data
+   * Get real news data with enhanced error handling
    */
   async getNewsData(symbol, companyName) {
     const cacheKey = `news_${symbol}`;
@@ -539,19 +397,31 @@ class RealAPIService {
     try {
       console.log(`📰 Fetching real news for ${symbol}...`);
       
-      let newsData = null;
-      
-      // Try backend first
-      try {
-        newsData = await this.getNewsFromBackend(symbol, companyName);
-      } catch (error) {
-        console.warn('Backend news API failed:', error.message);
-      }
-      
-      // Try News API directly
-      if (!newsData) {
-        newsData = await this.getNewsFromNewsAPI(symbol, companyName);
-      }
+      const newsData = await this.makeRateLimitedRequest('backend', async () => {
+        const query = `${symbol} OR "${companyName}"`;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
+        
+        const response = await fetch(
+          `${this.baseURL}/news?q=${encodeURIComponent(query)}&pageSize=10`,
+          { signal: controller.signal }
+        );
+        
+        clearTimeout(timeoutId);
+        
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.message || `News API error: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        
+        if (data.status !== 'ok') {
+          throw new Error(data.message || 'News API error');
+        }
+        
+        return this.processNewsData(data.articles);
+      });
       
       if (!newsData || newsData.length === 0) {
         console.warn(`No news found for ${symbol}`);
@@ -565,47 +435,11 @@ class RealAPIService {
       
     } catch (error) {
       errorHandler.log(error, `fetching news for ${symbol}`);
-      throw new Error(`Failed to fetch news: ${error.message}`);
+      
+      // Return empty array instead of throwing for news failures
+      console.warn(`News fetch failed for ${symbol}:`, error.message);
+      return [];
     }
-  }
-
-  /**
-   * Get news from backend
-   */
-  async getNewsFromBackend(symbol, companyName) {
-    const query = `${symbol} OR "${companyName}"`;
-    const response = await fetch(`${this.baseURL}/news?q=${encodeURIComponent(query)}&pageSize=10`);
-    
-    if (!response.ok) {
-      throw new Error(`Backend news API error: ${response.status}`);
-    }
-    
-    const data = await response.json();
-    return this.processNewsData(data.articles);
-  }
-
-  /**
-   * Get news from News API directly
-   */
-  async getNewsFromNewsAPI(symbol, companyName) {
-    return await this.makeRateLimitedRequest('news', async () => {
-      const query = `${symbol} OR "${companyName}" AND (stock OR shares OR trading OR market)`;
-      const url = `https://newsapi.org/v2/everything?q=${encodeURIComponent(query)}&language=en&sortBy=publishedAt&pageSize=10&apiKey=33eae2c8765c4268a5150064aaf26c10`;
-      
-      const response = await fetch(url);
-      
-      if (!response.ok) {
-        throw new Error(`News API error: ${response.status}`);
-      }
-      
-      const data = await response.json();
-      
-      if (data.status !== 'ok') {
-        throw new Error(`News API error: ${data.message}`);
-      }
-      
-      return this.processNewsData(data.articles);
-    });
   }
 
   /**
@@ -621,7 +455,7 @@ class RealAPIService {
         title: article.title,
         description: article.description,
         url: article.url,
-        source: article.source?.name || 'Unknown',
+        source: article.source?.name || article.source || 'Unknown',
         time: formatTimeAgo(article.publishedAt),
         publishedAt: article.publishedAt,
         sentiment: this.analyzeSentiment(article.title + ' ' + article.description),
@@ -630,9 +464,9 @@ class RealAPIService {
   }
 
   /**
-   * Get real chart data
+   * Get real chart data with enhanced error handling
    */
-  async getChartData(symbol, interval = '1d', range = '1mo') {
+  async getChartData(symbol, interval = '15min', range = '1d') {
     const cacheKey = `chart_${symbol}_${interval}_${range}`;
     const cached = this.getCachedData(cacheKey);
     if (cached) return cached;
@@ -644,27 +478,30 @@ class RealAPIService {
     try {
       console.log(`📊 Fetching real chart data for ${symbol}...`);
       
-      let chartData = null;
-      
-      // Try Yahoo Finance for chart data
-      try {
-        chartData = await this.getChartDataFromYahoo(symbol, interval, range);
-      } catch (error) {
-        console.warn('Yahoo chart API failed:', error.message);
-      }
-      
-      // Try Alpha Vantage as fallback
-      if (!chartData) {
-        try {
-          chartData = await this.getChartDataFromAlphaVantage(symbol);
-        } catch (error) {
-          console.warn('Alpha Vantage chart API failed:', error.message);
+      const chartData = await this.makeRateLimitedRequest('backend', async () => {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 15000);
+        
+        const response = await fetch(
+          `${this.baseURL}/chart/${symbol}?interval=${interval}`,
+          { signal: controller.signal }
+        );
+        
+        clearTimeout(timeoutId);
+        
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.message || `Chart API error: ${response.status}`);
         }
-      }
-      
-      if (!chartData || chartData.length === 0) {
-        throw new Error('No chart data available');
-      }
+        
+        const data = await response.json();
+        
+        if (data.status !== 'ok' || !data.data || data.data.length === 0) {
+          throw new Error(data.message || 'No chart data available');
+        }
+        
+        return data.data;
+      });
       
       this.setCachedData(cacheKey, chartData, CACHE_DURATIONS.CHART_DATA);
       console.log(`✅ Fetched ${chartData.length} chart data points for ${symbol}`);
@@ -673,108 +510,14 @@ class RealAPIService {
       
     } catch (error) {
       errorHandler.log(error, `fetching chart data for ${symbol}`);
+      
+      // For chart data, we can throw the error since it's more critical for UX
       throw new Error(`Failed to fetch chart data: ${error.message}`);
     }
   }
 
   /**
-   * Get chart data from Yahoo Finance
-   */
-  async getChartDataFromYahoo(symbol, interval, range) {
-    return await this.makeRateLimitedRequest('yahoo', async () => {
-      const yahooSymbol = STOCK_SYMBOLS.INDIAN.includes(symbol) ? `${symbol}.NS` : symbol;
-      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=${interval}&range=${range}`;
-      
-      const response = await fetch(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-      });
-      
-      if (!response.ok) {
-        throw new Error(`Yahoo chart API error: ${response.status}`);
-      }
-      
-      const data = await response.json();
-      const result = data.chart?.result?.[0];
-      
-      if (!result) {
-        throw new Error('No chart data in response');
-      }
-      
-      return this.formatYahooChartData(result);
-    });
-  }
-
-  /**
-   * Format Yahoo chart data
-   */
-  formatYahooChartData(result) {
-    const timestamps = result.timestamp;
-    const quote = result.indicators?.quote?.[0];
-    
-    if (!timestamps || !quote) return [];
-
-    return timestamps.map((timestamp, index) => ({
-      time: new Date(timestamp * 1000).toLocaleTimeString('en-US', { 
-        hour: '2-digit', 
-        minute: '2-digit' 
-      }),
-      timestamp: timestamp * 1000,
-      open: quote.open?.[index] || 0,
-      high: quote.high?.[index] || 0,
-      low: quote.low?.[index] || 0,
-      close: quote.close?.[index] || 0,
-      volume: quote.volume?.[index] || 0
-    })).filter(item => item.close > 0);
-  }
-
-  /**
-   * Get chart data from Alpha Vantage
-   */
-  async getChartDataFromAlphaVantage(symbol) {
-    return await this.makeRateLimitedRequest('alphavantage', async () => {
-      const url = `https://www.alphavantage.co/query?function=TIME_SERIES_INTRADAY&symbol=${symbol}.BSE&interval=15min&apikey=UDHV8TGEXHMKA1FP`;
-      const response = await fetch(url);
-      
-      if (!response.ok) {
-        throw new Error(`Alpha Vantage chart API error: ${response.status}`);
-      }
-      
-      const data = await response.json();
-      const timeSeries = data['Time Series (15min)'];
-      
-      if (!timeSeries) {
-        throw new Error('No intraday data available');
-      }
-      
-      return this.formatAlphaVantageChartData(timeSeries);
-    });
-  }
-
-  /**
-   * Format Alpha Vantage chart data
-   */
-  formatAlphaVantageChartData(timeSeries) {
-    return Object.entries(timeSeries)
-      .slice(0, 50) // Limit to recent data
-      .reverse() // Chronological order
-      .map(([timestamp, values]) => ({
-        time: new Date(timestamp).toLocaleTimeString('en-US', { 
-          hour: '2-digit', 
-          minute: '2-digit' 
-        }),
-        timestamp: new Date(timestamp).getTime(),
-        open: parseFloat(values['1. open']),
-        high: parseFloat(values['2. high']),
-        low: parseFloat(values['3. low']),
-        close: parseFloat(values['4. close']),
-        volume: parseInt(values['5. volume'])
-      }));
-  }
-
-  /**
-   * Search stocks across multiple APIs
+   * Search stocks with enhanced error handling
    */
   async searchStocks(query) {
     if (!query || query.length < 1) return [];
@@ -793,54 +536,74 @@ class RealAPIService {
         return await this.getStockData(exactMatches.slice(0, 10));
       }
       
-      // Try Alpha Vantage search
-      try {
-        const searchResults = await this.searchWithAlphaVantage(sanitizedQuery);
-        if (searchResults.length > 0) {
-          const symbols = searchResults.map(r => r.symbol).slice(0, 5);
-          return await this.getStockData(symbols);
+      // Try backend search
+      const searchResults = await this.makeRateLimitedRequest('backend', async () => {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
+        
+        const response = await fetch(
+          `${this.baseURL}/search/stocks?q=${encodeURIComponent(sanitizedQuery)}`,
+          { signal: controller.signal }
+        );
+        
+        clearTimeout(timeoutId);
+        
+        if (!response.ok) {
+          throw new Error(`Search API error: ${response.status}`);
         }
-      } catch (error) {
-        console.warn('Alpha Vantage search failed:', error);
+        
+        const data = await response.json();
+        
+        if (data.status !== 'ok') {
+          throw new Error(data.message || 'Search API error');
+        }
+        
+        return data.results;
+      });
+      
+      if (searchResults && searchResults.length > 0) {
+        const symbols = searchResults.map(r => r.symbol).slice(0, 5);
+        return await this.getStockData(symbols);
       }
       
       return [];
+      
     } catch (error) {
       errorHandler.log(error, 'searching stocks');
+      console.warn('Stock search failed:', error.message);
       return [];
     }
-  }
-
-  /**
-   * Search with Alpha Vantage
-   */
-  async searchWithAlphaVantage(query) {
-    return await this.makeRateLimitedRequest('alphavantage', async () => {
-      const url = `https://www.alphavantage.co/query?function=SYMBOL_SEARCH&keywords=${query}&apikey=UDHV8TGEXHMKA1FP`;
-      const response = await fetch(url);
-      
-      if (!response.ok) {
-        throw new Error(`Alpha Vantage search error: ${response.status}`);
-      }
-      
-      const data = await response.json();
-      const bestMatches = data.bestMatches || [];
-      
-      return bestMatches.map(match => ({
-        symbol: match['1. symbol'],
-        name: match['2. name'],
-        type: match['3. type'],
-        region: match['4. region'],
-        currency: match['8. currency']
-      }));
-    });
   }
 
   /**
    * Get current market status
    */
   async getMarketStatus() {
-    // This could be enhanced with real market hours API
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      
+      const response = await fetch(`${this.baseURL}/market/status`, {
+        signal: controller.signal
+      });
+      
+      clearTimeout(timeoutId);
+      
+      if (response.ok) {
+        return await response.json();
+      }
+    } catch (error) {
+      console.warn('Market status API failed:', error.message);
+    }
+    
+    // Fallback to client-side calculation
+    return this.calculateMarketStatusFallback();
+  }
+
+  /**
+   * Fallback market status calculation
+   */
+  calculateMarketStatusFallback() {
     const now = new Date();
     const indianTime = new Date(now.toLocaleString("en-US", {timeZone: "Asia/Kolkata"}));
     const dayOfWeek = indianTime.getDay();
@@ -874,7 +637,7 @@ class RealAPIService {
     else if (stock.changePercent < -1) score -= 1;
     
     // Market context (simplified)
-    const marketSentiment = 0.1; // This could come from market indices
+    const marketSentiment = 0.1;
     score += marketSentiment;
     
     if (score >= 2) return 'STRONG_BUY';
@@ -888,7 +651,6 @@ class RealAPIService {
    * Calculate approximate market cap
    */
   calculateMarketCap(symbol, price) {
-    // Simplified market cap calculation
     const shareMultipliers = {
       'RELIANCE': 6.765, 'TCS': 3.668, 'INFY': 4.261, 'HDFCBANK': 7.642,
       'ICICIBANK': 7.024, 'HINDUNILVR': 2.349, 'BAJFINANCE': 0.617,
@@ -953,12 +715,7 @@ class RealAPIService {
       'TITAN': 'Titan Company Limited',
       'SUNPHARMA': 'Sun Pharmaceutical Industries',
       'TECHM': 'Tech Mahindra Limited',
-      'ULTRACEMCO': 'UltraTech Cement Limited',
-      'AAPL': 'Apple Inc.',
-      'MSFT': 'Microsoft Corporation',
-      'GOOGL': 'Alphabet Inc.',
-      'AMZN': 'Amazon.com Inc.',
-      'TSLA': 'Tesla Inc.'
+      'ULTRACEMCO': 'UltraTech Cement Limited'
     };
     return companies[symbol] || symbol;
   }
@@ -998,12 +755,13 @@ class RealAPIService {
     
     return {
       status: 'OK',
-      message: 'Real data API service operational',
+      message: 'Enhanced real data API service operational',
       timestamp: new Date().toISOString(),
       backend: backendHealth,
       websocket: this.websocket?.readyState === WebSocket.OPEN,
       cache: this.cache.size,
-      online: this.isOnline
+      online: this.isOnline,
+      wsReconnectAttempts: this.wsReconnectAttempts
     };
   }
 
@@ -1027,17 +785,17 @@ class RealAPIService {
       this.websocket.close();
     }
     
-    console.log('🧹 API service cleaned up');
+    console.log('🧹 Enhanced API service cleaned up');
   }
 }
 
 // Create and export singleton
-const realApiService = new RealAPIService();
+const enhancedRealApiService = new EnhancedRealAPIService();
 
 // Cleanup every 5 minutes
-setInterval(() => realApiService.cleanup(), 300000);
+setInterval(() => enhancedRealApiService.cleanup(), 300000);
 
 // Cleanup on page unload
-window.addEventListener('beforeunload', () => realApiService.cleanup());
+window.addEventListener('beforeunload', () => enhancedRealApiService.cleanup());
 
-export default realApiService;
+export default enhancedRealApiService;
