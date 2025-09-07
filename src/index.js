@@ -38,7 +38,7 @@ if ('PerformanceObserver' in window) {
   }).observe({ entryTypes: ['layout-shift'] });
 }
 
-// ===== ERROR BOUNDARY =====
+// ===== FIXED ERROR BOUNDARY =====
 
 class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -53,12 +53,12 @@ class ErrorBoundary extends React.Component {
   componentDidCatch(error, errorInfo) {
     this.setState({
       error,
-      errorInfo
+      errorInfo: errorInfo || { componentStack: 'No component stack available' }
     });
 
     // Log error to error reporting service
     errorHandler.log(error, 'React Error Boundary', {
-      componentStack: errorInfo.componentStack,
+      componentStack: errorInfo?.componentStack || 'No component stack available',
       errorBoundary: true
     });
 
@@ -93,18 +93,18 @@ class ErrorBoundary extends React.Component {
               </button>
             </div>
 
-            {process.env.NODE_ENV === 'development' && (
+            {process.env.NODE_ENV === 'development' && this.state.error && (
               <details className="error-boundary-details">
                 <summary>Technical Details (Development Only)</summary>
                 <div className="error-boundary-stack">
                   <h3>Error:</h3>
-                  <pre>{this.state.error && this.state.error.toString()}</pre>
+                  <pre>{this.state.error.toString()}</pre>
                   
                   <h3>Component Stack:</h3>
-                  <pre>{this.state.errorInfo.componentStack}</pre>
+                  <pre>{this.state.errorInfo?.componentStack || 'No component stack available'}</pre>
                   
                   <h3>Error Stack:</h3>
-                  <pre>{this.state.error && this.state.error.stack}</pre>
+                  <pre>{this.state.error.stack || 'No error stack available'}</pre>
                 </div>
               </details>
             )}
@@ -122,20 +122,20 @@ class ErrorBoundary extends React.Component {
               align-items: center;
               justify-content: center;
               padding: 20px;
-              background: linear-gradient(135deg, #0a0e1a 0%, #141824 100%);
+              background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
               font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-              color: #ffffff;
+              color: #1e293b;
             }
             
             .error-boundary-content {
               max-width: 600px;
               text-align: center;
-              background: rgba(36, 41, 54, 0.8);
+              background: rgba(255, 255, 255, 0.9);
               backdrop-filter: blur(20px);
-              border: 1px solid #334155;
+              border: 1px solid #e2e8f0;
               border-radius: 16px;
               padding: 40px;
-              box-shadow: 0 20px 25px rgba(0, 0, 0, 0.4);
+              box-shadow: 0 20px 25px rgba(0, 0, 0, 0.1);
             }
             
             .error-boundary-icon {
@@ -147,14 +147,14 @@ class ErrorBoundary extends React.Component {
               font-size: 28px;
               font-weight: 700;
               margin-bottom: 16px;
-              color: #ffffff;
+              color: #1e293b;
             }
             
             .error-boundary-message {
               font-size: 16px;
               line-height: 1.6;
               margin-bottom: 32px;
-              color: #8892b0;
+              color: #475569;
             }
             
             .error-boundary-actions {
@@ -177,25 +177,25 @@ class ErrorBoundary extends React.Component {
             }
             
             .error-boundary-btn.primary {
-              background: linear-gradient(135deg, #00ff88 0%, #00d4aa 100%);
+              background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
               color: #ffffff;
             }
             
             .error-boundary-btn.secondary {
               background: transparent;
-              color: #8892b0;
-              border: 1px solid #334155;
+              color: #475569;
+              border: 1px solid #e2e8f0;
             }
             
             .error-boundary-btn:hover {
               transform: translateY(-2px);
-              box-shadow: 0 8px 25px rgba(0, 255, 136, 0.3);
+              box-shadow: 0 8px 25px rgba(59, 130, 246, 0.3);
             }
             
             .error-boundary-details {
               margin-top: 32px;
               text-align: left;
-              background: #1a1f2e;
+              background: #f1f5f9;
               border-radius: 8px;
               padding: 16px;
             }
@@ -204,7 +204,7 @@ class ErrorBoundary extends React.Component {
               cursor: pointer;
               font-weight: 600;
               margin-bottom: 16px;
-              color: #ffa726;
+              color: #f59e0b;
             }
             
             .error-boundary-stack {
@@ -214,24 +214,24 @@ class ErrorBoundary extends React.Component {
             
             .error-boundary-stack h3 {
               margin: 16px 0 8px 0;
-              color: #ff4757;
+              color: #ef4444;
             }
             
             .error-boundary-stack pre {
-              background: #0f1419;
+              background: #ffffff;
               padding: 12px;
               border-radius: 4px;
               overflow-x: auto;
               white-space: pre-wrap;
               word-break: break-word;
               color: #64748b;
-              border: 1px solid #334155;
+              border: 1px solid #e2e8f0;
             }
             
             .error-boundary-footer {
               margin-top: 32px;
               padding-top: 24px;
-              border-top: 1px solid #334155;
+              border-top: 1px solid #e2e8f0;
               font-size: 14px;
               color: #64748b;
             }
@@ -332,7 +332,6 @@ const registerServiceWorker = () => {
                 if (newWorker.state === 'installed') {
                   if (navigator.serviceWorker.controller) {
                     console.log('🔄 New content available, please refresh');
-                    // Show update notification to user
                     showUpdateNotification();
                   } else {
                     console.log('📱 Content cached for offline use');
@@ -353,7 +352,6 @@ const registerServiceWorker = () => {
  * Show update notification to user
  */
 const showUpdateNotification = () => {
-  // Create a simple update notification
   const notification = document.createElement('div');
   notification.className = 'update-notification';
   notification.innerHTML = `
@@ -364,24 +362,22 @@ const showUpdateNotification = () => {
     </div>
   `;
   
-  // Add styles
   notification.style.cssText = `
     position: fixed;
     top: 20px;
     right: 20px;
-    background: #252837;
-    color: white;
+    background: #ffffff;
+    color: #1e293b;
     padding: 16px;
     border-radius: 8px;
-    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
     z-index: 10000;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    border: 1px solid #334155;
+    border: 1px solid #e2e8f0;
   `;
 
   document.body.appendChild(notification);
   
-  // Auto-remove after 10 seconds
   setTimeout(() => {
     if (notification.parentElement) {
       notification.remove();
@@ -427,15 +423,11 @@ if (process.env.NODE_ENV === 'development') {
     }
   };
   
-  // Log startup info
   console.log('🔧 Development tools available via window.tradingApp');
 }
 
 // ===== CRITICAL CSS INJECTION =====
 
-/**
- * Inject critical CSS for loading states
- */
 const injectCriticalCSS = () => {
   const criticalCSS = `
     .update-content {
@@ -445,7 +437,7 @@ const injectCriticalCSS = () => {
     }
     
     .update-btn, .dismiss-btn {
-      background: #00ff88;
+      background: #3b82f6;
       color: white;
       border: none;
       padding: 6px 12px;
@@ -457,16 +449,16 @@ const injectCriticalCSS = () => {
     
     .dismiss-btn {
       background: transparent;
-      color: #8892b0;
+      color: #64748b;
       padding: 6px 8px;
     }
     
     .update-btn:hover {
-      background: #00d4aa;
+      background: #1d4ed8;
     }
     
     .dismiss-btn:hover {
-      background: rgba(255, 255, 255, 0.1);
+      background: rgba(0, 0, 0, 0.1);
     }
   `;
 
@@ -488,7 +480,6 @@ initializeApplication();
 
 // ===== CLEANUP =====
 
-// Cleanup on page unload
 window.addEventListener('beforeunload', () => {
   perfUtils.mark('app-unload');
   console.log('👋 TradePro unloading...');
