@@ -46,12 +46,11 @@ export const useAppData = () => {
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [lastUpdate, setLastUpdate] = useState(null);
   const [marketStatus, setMarketStatus] = useState(null);
-  const [refreshInterval, setRefreshInterval] = useState(null);
   
   // Refs for cleanup and optimization
   const abortControllerRef = useRef(null);
-  const updateTimeoutRef = useRef(null);
   const retryCountRef = useRef(0);
+  const refreshIntervalRef = useRef(null);
 
   // ===== CORE DATA LOADING =====
 
@@ -84,11 +83,15 @@ export const useAppData = () => {
             const technical = dataProcessor.performTechnicalAnalysis(stock);
             setTechnicalAnalysis(prev => new Map(prev).set(stock.symbol, technical));
             
-            // Load chart data in background
-            loadChartData(stock.symbol);
+            // Load chart data in background (don't await to avoid blocking)
+            loadChartData(stock.symbol).catch(err => 
+              console.warn(`Failed to load chart for ${stock.symbol}:`, err)
+            );
             
-            // Load news in background
-            loadNewsData(stock.symbol, stock.name);
+            // Load news in background (don't await to avoid blocking)
+            loadNewsData(stock.symbol, stock.name).catch(err => 
+              console.warn(`Failed to load news for ${stock.symbol}:`, err)
+            );
             
             return {
               ...stock,
@@ -131,7 +134,7 @@ export const useAppData = () => {
     } finally {
       setLoading(prev => ({ ...prev, stocks: false }));
     }
-  }, [isOnline]);
+  }, [isOnline]); // Fixed dependencies
 
   /**
    * Load portfolio data and calculate metrics
@@ -152,17 +155,21 @@ export const useAppData = () => {
       // Update current prices for holdings
       if (savedPortfolio.holdings.length > 0) {
         const symbols = savedPortfolio.holdings.map(h => h.symbol);
-        const currentPrices = await apiService.getStockData(symbols);
-        
-        savedPortfolio.holdings = savedPortfolio.holdings.map(holding => {
-          const currentStock = currentPrices.find(s => s.symbol === holding.symbol);
-          return {
-            ...holding,
-            currentPrice: currentStock ? currentStock.price : holding.avgPrice,
-            change: currentStock ? currentStock.change : 0,
-            changePercent: currentStock ? currentStock.changePercent : 0
-          };
-        });
+        try {
+          const currentPrices = await apiService.getStockData(symbols);
+          
+          savedPortfolio.holdings = savedPortfolio.holdings.map(holding => {
+            const currentStock = currentPrices.find(s => s.symbol === holding.symbol);
+            return {
+              ...holding,
+              currentPrice: currentStock ? currentStock.price : holding.avgPrice,
+              change: currentStock ? currentStock.change : 0,
+              changePercent: currentStock ? currentStock.changePercent : 0
+            };
+          });
+        } catch (error) {
+          console.warn('Failed to update portfolio prices:', error);
+        }
       }
 
       // Calculate portfolio metrics
@@ -178,7 +185,7 @@ export const useAppData = () => {
     } finally {
       setLoading(prev => ({ ...prev, portfolio: false }));
     }
-  }, [stocks]);
+  }, []); // Remove stocks dependency to avoid infinite loop
 
   /**
    * Load news data for a specific stock
@@ -237,7 +244,7 @@ export const useAppData = () => {
         setLoading(prev => ({ ...prev, stocks: false }));
       }
     }, 500),
-    []
+    [] // Empty dependency array
   );
 
   /**
@@ -383,8 +390,8 @@ export const useAppData = () => {
     setMarketStatus(status);
     
     // Clear existing interval
-    if (refreshInterval) {
-      clearInterval(refreshInterval);
+    if (refreshIntervalRef.current) {
+      clearInterval(refreshIntervalRef.current);
     }
 
     // Set refresh interval based on market status
@@ -396,16 +403,18 @@ export const useAppData = () => {
       interval = 180000; // 3 minutes during pre-market
     }
 
-    const newInterval = setInterval(() => {
+    refreshIntervalRef.current = setInterval(() => {
       if (isOnline && !loading.stocks) {
         loadStocks(STOCK_SYMBOLS.INDIAN.slice(0, 10), true); // Refresh current stocks
       }
     }, interval);
-
-    setRefreshInterval(newInterval);
     
-    return () => clearInterval(newInterval);
-  }, [loadStocks, isOnline, loading.stocks, refreshInterval]);
+    return () => {
+      if (refreshIntervalRef.current) {
+        clearInterval(refreshIntervalRef.current);
+      }
+    };
+  }, [loadStocks, isOnline, loading.stocks]);
 
   /**
    * Manual refresh function
@@ -463,7 +472,7 @@ export const useAppData = () => {
     }, 60000); // Check every minute
 
     return () => clearInterval(statusInterval);
-  }, [loadStocks, loadPortfolio]);
+  }, []); // Empty dependency array
 
   /**
    * Network status monitoring
@@ -508,23 +517,11 @@ export const useAppData = () => {
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
       }
-      if (updateTimeoutRef.current) {
-        clearTimeout(updateTimeoutRef.current);
-      }
-      if (refreshInterval) {
-        clearInterval(refreshInterval);
+      if (refreshIntervalRef.current) {
+        clearInterval(refreshIntervalRef.current);
       }
     };
-  }, [refreshInterval]);
-
-  /**
-   * Search effect
-   */
-  useEffect(() => {
-    if (searchQuery) {
-      debouncedSearch(searchQuery);
-    }
-  }, [searchQuery, debouncedSearch]);
+  }, []);
 
   // ===== RETURN HOOK DATA =====
 

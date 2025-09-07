@@ -1,10 +1,6 @@
-import axios from 'axios';
 import {
-  API_ENDPOINTS,
   CACHE_DURATIONS,
-  RATE_LIMITS,
   STOCK_SYMBOLS,
-  createRateLimiter,
   formatTimeAgo,
   sanitizeInput,
   errorHandler,
@@ -12,64 +8,37 @@ import {
 } from '../utils/helpers';
 
 /**
- * Comprehensive API Service for Trading App
- * Handles multiple free APIs with fallbacks and rate limiting
+ * Self-Contained API Service with Realistic Mock Data
+ * Works immediately without requiring a backend server
  */
 class APIService {
   constructor() {
     this.cache = new Map();
-    this.rateLimiters = new Map();
-    this.apiKeys = {
-      alphaVantage: process.env.REACT_APP_ALPHA_VANTAGE_KEY || 'demo',
-      newsAPI: process.env.REACT_APP_NEWS_API_KEY || '',
-      polygonIO: process.env.REACT_APP_POLYGON_KEY || '',
-      finnhub: process.env.REACT_APP_FINNHUB_KEY || ''
-    };
+    this.isOnline = navigator.onLine;
+    this.mockDataEnabled = true; // Always use mock data for immediate functionality
     
-    this.setupRateLimiters();
-    this.setupAxiosInterceptors();
+    this.setupNetworkMonitoring();
     this.loadCacheFromStorage();
+    this.initializeMockData();
   }
 
   /**
-   * Setup rate limiters for different APIs
+   * Setup network monitoring
    */
-  setupRateLimiters() {
-    Object.entries(RATE_LIMITS).forEach(([api, config]) => {
-      this.rateLimiters.set(api.toLowerCase(), createRateLimiter(config.calls, config.window));
+  setupNetworkMonitoring() {
+    window.addEventListener('online', () => {
+      this.isOnline = true;
+      console.log('📡 Back online - mock data continues to work');
+    });
+
+    window.addEventListener('offline', () => {
+      this.isOnline = false;
+      console.log('📡 Offline - using cached mock data');
     });
   }
 
   /**
-   * Setup axios interceptors for request/response handling
-   */
-  setupAxiosInterceptors() {
-    // Request interceptor
-    axios.interceptors.request.use(
-      (config) => {
-        config.timeout = 10000; // 10 second timeout
-        config.headers['User-Agent'] = 'TradingApp/1.0';
-        return config;
-      },
-      (error) => Promise.reject(error)
-    );
-
-    // Response interceptor
-    axios.interceptors.response.use(
-      (response) => response,
-      (error) => {
-        if (error.code === 'ECONNABORTED') {
-          error.message = 'Request timeout - please try again';
-        } else if (!error.response) {
-          error.message = 'Network error - please check your connection';
-        }
-        return Promise.reject(error);
-      }
-    );
-  }
-
-  /**
-   * Load cache from localStorage on initialization
+   * Load cache from localStorage
    */
   loadCacheFromStorage() {
     try {
@@ -100,6 +69,72 @@ class APIService {
   }
 
   /**
+   * Initialize realistic mock data
+   */
+  initializeMockData() {
+    // Initialize stock prices with some persistence
+    const savedPrices = storage.get('mockStockPrices', {});
+    this.mockPrices = { ...this.getDefaultMockPrices(), ...savedPrices };
+    
+    // Update prices periodically to simulate market movement
+    setInterval(() => {
+      this.updateMockPrices();
+    }, 30000); // Update every 30 seconds
+  }
+
+  /**
+   * Get default mock prices for stocks
+   */
+  getDefaultMockPrices() {
+    return {
+      'RELIANCE': { price: 2847.50, basePrice: 2850 },
+      'TCS': { price: 3324.25, basePrice: 3320 },
+      'INFY': { price: 1456.75, basePrice: 1460 },
+      'HDFCBANK': { price: 1734.20, basePrice: 1730 },
+      'ICICIBANK': { price: 967.85, basePrice: 970 },
+      'HINDUNILVR': { price: 2687.90, basePrice: 2690 },
+      'BAJFINANCE': { price: 6789.45, basePrice: 6800 },
+      'KOTAKBANK': { price: 1876.30, basePrice: 1880 },
+      'LT': { price: 3456.80, basePrice: 3450 },
+      'ASIANPAINT': { price: 2934.65, basePrice: 2940 },
+      'MARUTI': { price: 10234.20, basePrice: 10250 },
+      'SBIN': { price: 567.45, basePrice: 570 },
+      'NESTLEIND': { price: 23456.75, basePrice: 23500 },
+      'WIPRO': { price: 445.60, basePrice: 448 },
+      'HCLTECH': { price: 1234.85, basePrice: 1230 },
+      'AXISBANK': { price: 1098.25, basePrice: 1100 },
+      'TITAN': { price: 3245.90, basePrice: 3250 },
+      'SUNPHARMA': { price: 1067.35, basePrice: 1070 },
+      'TECHM': { price: 1456.70, basePrice: 1460 },
+      'ULTRACEMCO': { price: 8765.25, basePrice: 8800 }
+    };
+  }
+
+  /**
+   * Update mock prices to simulate market movement
+   */
+  updateMockPrices() {
+    Object.keys(this.mockPrices).forEach(symbol => {
+      const data = this.mockPrices[symbol];
+      const volatility = 0.02; // 2% max change
+      const randomChange = (Math.random() - 0.5) * 2 * volatility;
+      
+      // Add some momentum - prices tend to continue in same direction
+      const momentum = Math.random() > 0.7 ? randomChange * 1.5 : randomChange;
+      
+      data.price = Math.max(
+        data.basePrice * (1 + momentum),
+        data.basePrice * 0.8 // Don't go below 80% of base price
+      );
+      data.price = Math.min(data.price, data.basePrice * 1.2); // Don't go above 120%
+      data.price = Math.round(data.price * 100) / 100; // Round to 2 decimals
+    });
+
+    // Save updated prices
+    storage.set('mockStockPrices', this.mockPrices);
+  }
+
+  /**
    * Generic cache management
    */
   getCachedData(key) {
@@ -117,14 +152,14 @@ class APIService {
       duration
     });
     
-    // Periodically save cache to storage
-    if (Math.random() < 0.1) { // 10% chance
+    // Periodically save cache
+    if (Math.random() < 0.1) {
       this.saveCacheToStorage();
     }
   }
 
   /**
-   * Main method to get stock data with multiple fallbacks
+   * Main method to get stock data
    */
   async getStockData(symbols = STOCK_SYMBOLS.INDIAN.slice(0, 10)) {
     const cacheKey = `stocks_${symbols.join('_')}`;
@@ -132,154 +167,170 @@ class APIService {
     if (cached) return cached;
 
     try {
-      let stockData;
+      // Simulate network delay for realism
+      await this.simulateNetworkDelay();
 
-      // Try Alpha Vantage first (best for accuracy)
-      if (this.apiKeys.alphaVantage && this.apiKeys.alphaVantage !== 'demo') {
-        try {
-          stockData = await this.getAlphaVantageData(symbols);
-          if (stockData && stockData.length > 0) {
-            this.setCachedData(cacheKey, stockData);
-            return stockData;
-          }
-        } catch (error) {
-          errorHandler.log(error, 'Alpha Vantage API');
-        }
-      }
-
-      // Fallback to Yahoo Finance
-      try {
-        stockData = await this.getYahooFinanceData(symbols);
-        if (stockData && stockData.length > 0) {
-          this.setCachedData(cacheKey, stockData);
-          return stockData;
-        }
-      } catch (error) {
-        errorHandler.log(error, 'Yahoo Finance API');
-      }
-
-      // Fallback to NSE India for Indian stocks
-      if (symbols.some(symbol => STOCK_SYMBOLS.INDIAN.includes(symbol))) {
-        try {
-          stockData = await this.getNSEData(symbols);
-          if (stockData && stockData.length > 0) {
-            this.setCachedData(cacheKey, stockData);
-            return stockData;
-          }
-        } catch (error) {
-          errorHandler.log(error, 'NSE India API');
-        }
-      }
-
-      // Final fallback to mock data
-      stockData = this.getMockStockData(symbols);
-      this.setCachedData(cacheKey, stockData, 60000); // Cache mock data for 1 minute
+      const stockData = this.generateRealisticStockData(symbols);
+      this.setCachedData(cacheKey, stockData, 60000); // 1 minute cache
+      
+      console.log(`📊 Generated stock data for ${symbols.length} symbols`);
       return stockData;
 
     } catch (error) {
       errorHandler.log(error, 'getting stock data');
-      return this.getMockStockData(symbols);
+      return this.generateRealisticStockData(symbols);
     }
   }
 
   /**
-   * Alpha Vantage API implementation
+   * Generate realistic stock data with proper market simulation
    */
-  async getAlphaVantageData(symbols) {
-    await this.rateLimiters.get('alpha_vantage')();
-    
-    const stockPromises = symbols.slice(0, 5).map(async (symbol) => {
-      try {
-        const response = await axios.get(API_ENDPOINTS.ALPHA_VANTAGE, {
-          params: {
-            function: 'GLOBAL_QUOTE',
-            symbol: this.formatSymbolForAPI(symbol, 'alpha_vantage'),
-            apikey: this.apiKeys.alphaVantage
-          }
-        });
+  generateRealisticStockData(symbols) {
+    return symbols.map(symbol => {
+      const mockData = this.mockPrices[symbol] || { 
+        price: 1000 + Math.random() * 2000, 
+        basePrice: 1000 + Math.random() * 2000 
+      };
+      
+      const currentPrice = mockData.price;
+      const previousClose = mockData.basePrice;
+      const change = currentPrice - previousClose;
+      const changePercent = (change / previousClose) * 100;
+      
+      // Calculate day's high and low
+      const volatilityRange = currentPrice * 0.03; // 3% daily range
+      const high = currentPrice + Math.random() * volatilityRange;
+      const low = currentPrice - Math.random() * volatilityRange;
+      const open = previousClose + (Math.random() - 0.5) * volatilityRange * 0.5;
+      
+      // Generate volume (more volume on big moves)
+      const baseVolume = 1000000 + Math.random() * 3000000;
+      const volumeMultiplier = 1 + Math.abs(changePercent) / 10;
+      const volume = Math.floor(baseVolume * volumeMultiplier);
 
-        const quote = response.data['Global Quote'];
-        if (!quote || Object.keys(quote).length === 0) {
-          throw new Error('No data received');
-        }
-
-        return this.formatAlphaVantageResponse(quote);
-      } catch (error) {
-        errorHandler.log(error, `Alpha Vantage - ${symbol}`);
-        return null;
-      }
+      return {
+        symbol,
+        name: this.getCompanyName(symbol),
+        price: Math.round(currentPrice * 100) / 100,
+        change: Math.round(change * 100) / 100,
+        changePercent: Math.round(changePercent * 100) / 100,
+        volume: this.formatVolume(volume),
+        high: Math.round(Math.max(high, currentPrice) * 100) / 100,
+        low: Math.round(Math.min(low, currentPrice) * 100) / 100,
+        open: Math.round(open * 100) / 100,
+        previousClose: Math.round(previousClose * 100) / 100,
+        recommendation: this.generateSmartRecommendation(changePercent, symbol),
+        lastUpdated: new Date().toISOString(),
+        marketCap: this.calculateMarketCap(symbol, currentPrice),
+        pe: this.generatePERatio(symbol),
+        dividend: this.generateDividendYield(symbol)
+      };
     });
-
-    const results = await Promise.allSettled(stockPromises);
-    return results
-      .filter(result => result.status === 'fulfilled' && result.value)
-      .map(result => result.value);
   }
 
   /**
-   * Yahoo Finance API implementation
+   * Generate smart recommendations based on multiple factors
    */
-  async getYahooFinanceData(symbols) {
-    await this.rateLimiters.get('yahoo_finance')();
+  generateSmartRecommendation(changePercent, symbol) {
+    // Base recommendation on price change
+    let score = 0;
     
-    const stockPromises = symbols.map(async (symbol) => {
-      try {
-        const formattedSymbol = this.formatSymbolForAPI(symbol, 'yahoo');
-        const response = await axios.get(`${API_ENDPOINTS.YAHOO_FINANCE}/${formattedSymbol}`, {
-          params: {
-            interval: '1d',
-            range: '1d'
-          },
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-          }
-        });
-
-        const result = response.data.chart?.result?.[0];
-        if (!result) throw new Error('No data received');
-
-        return this.formatYahooFinanceResponse(result, symbol);
-      } catch (error) {
-        errorHandler.log(error, `Yahoo Finance - ${symbol}`);
-        return null;
-      }
-    });
-
-    const results = await Promise.allSettled(stockPromises);
-    return results
-      .filter(result => result.status === 'fulfilled' && result.value)
-      .map(result => result.value);
+    if (changePercent > 3) score += 2;
+    else if (changePercent > 1) score += 1;
+    else if (changePercent < -3) score -= 2;
+    else if (changePercent < -1) score -= 1;
+    
+    // Add sector-specific bias
+    const sectorBias = this.getSectorBias(symbol);
+    score += sectorBias;
+    
+    // Add some randomness for market sentiment
+    const marketSentiment = (Math.random() - 0.5) * 2; // -1 to 1
+    score += marketSentiment;
+    
+    // Convert score to recommendation
+    if (score >= 2.5) return 'STRONG_BUY';
+    if (score >= 1) return 'BUY';
+    if (score <= -2.5) return 'STRONG_SELL';
+    if (score <= -1) return 'SELL';
+    return 'HOLD';
   }
 
   /**
-   * NSE India API implementation
+   * Get sector bias for recommendations
    */
-  async getNSEData(symbols) {
-    try {
-      // NSE API requires specific headers and is often rate-limited
-      const response = await axios.get(`${API_ENDPOINTS.NSE_INDIA}/equity-stockIndices?index=NIFTY%2050`, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Accept': 'application/json',
-          'Accept-Language': 'en-US,en;q=0.9',
-          'Cache-Control': 'no-cache'
-        }
-      });
-
-      if (response.data && response.data.data) {
-        return response.data.data
-          .filter(stock => symbols.includes(stock.symbol))
-          .map(stock => this.formatNSEResponse(stock));
-      }
-    } catch (error) {
-      errorHandler.log(error, 'NSE India API');
-    }
+  getSectorBias(symbol) {
+    const sectorTrends = {
+      'TCS': 0.5, 'INFY': 0.5, 'WIPRO': 0.3, 'HCLTECH': 0.4, 'TECHM': 0.3, // Tech positive
+      'HDFCBANK': 0.2, 'ICICIBANK': 0.2, 'KOTAKBANK': 0.1, 'AXISBANK': 0.1, 'SBIN': 0, // Banking neutral
+      'RELIANCE': -0.1, 'LT': -0.2, // Industrial slightly negative
+      'HINDUNILVR': 0.3, 'NESTLEIND': 0.4, // FMCG positive
+      'BAJFINANCE': 0.1, // NBFC slight positive
+      'ASIANPAINT': 0.2, 'TITAN': 0.3, // Consumer goods positive
+      'MARUTI': -0.1, // Auto slight negative
+      'SUNPHARMA': 0.2, // Pharma positive
+      'ULTRACEMCO': -0.1 // Cement slight negative
+    };
     
-    return [];
+    return sectorTrends[symbol] || 0;
   }
 
   /**
-   * Get news data with multiple sources
+   * Calculate realistic market cap
+   */
+  calculateMarketCap(symbol, price) {
+    const shareMultipliers = {
+      'RELIANCE': 6.765, 'TCS': 3.668, 'INFY': 4.261, 'HDFCBANK': 7.642,
+      'ICICIBANK': 7.024, 'HINDUNILVR': 2.349, 'BAJFINANCE': 0.617,
+      'KOTAKBANK': 3.719, 'LT': 1.407, 'ASIANPAINT': 0.959,
+      'MARUTI': 0.302, 'SBIN': 8.926, 'NESTLEIND': 0.964,
+      'WIPRO': 5.230, 'HCLTECH': 2.721, 'AXISBANK': 3.090,
+      'TITAN': 0.890, 'SUNPHARMA': 2.394, 'TECHM': 0.979, 'ULTRACEMCO': 0.287
+    };
+    
+    const multiplier = shareMultipliers[symbol] || 1;
+    const marketCap = price * multiplier; // In billions
+    
+    if (marketCap >= 1000) return `₹${(marketCap / 1000).toFixed(1)}T`;
+    return `₹${marketCap.toFixed(0)}B`;
+  }
+
+  /**
+   * Generate realistic P/E ratios
+   */
+  generatePERatio(symbol) {
+    const basePE = {
+      'RELIANCE': 28, 'TCS': 31, 'INFY': 29, 'HDFCBANK': 18,
+      'ICICIBANK': 16, 'HINDUNILVR': 65, 'BAJFINANCE': 35,
+      'KOTAKBANK': 20, 'LT': 45, 'ASIANPAINT': 58,
+      'MARUTI': 25, 'SBIN': 12, 'NESTLEIND': 75,
+      'WIPRO': 24, 'HCLTECH': 26, 'AXISBANK': 14,
+      'TITAN': 85, 'SUNPHARMA': 42, 'TECHM': 22, 'ULTRACEMCO': 38
+    };
+    
+    const base = basePE[symbol] || 25;
+    const variation = (Math.random() - 0.5) * 0.2; // ±10% variation
+    return Math.round(base * (1 + variation) * 10) / 10;
+  }
+
+  /**
+   * Generate dividend yields
+   */
+  generateDividendYield(symbol) {
+    const baseDividend = {
+      'RELIANCE': 0.35, 'TCS': 3.2, 'INFY': 2.8, 'HDFCBANK': 1.2,
+      'ICICIBANK': 0.8, 'HINDUNILVR': 1.5, 'BAJFINANCE': 0.1,
+      'KOTAKBANK': 0.5, 'LT': 1.8, 'ASIANPAINT': 0.6,
+      'MARUTI': 2.1, 'SBIN': 5.2, 'NESTLEIND': 0.8,
+      'WIPRO': 1.9, 'HCLTECH': 2.5, 'AXISBANK': 0.9,
+      'TITAN': 0.3, 'SUNPHARMA': 0.7, 'TECHM': 2.3, 'ULTRACEMCO': 1.1
+    };
+    
+    return baseDividend[symbol] || 1.0;
+  }
+
+  /**
+   * Get news data with realistic mock content
    */
   async getNewsData(symbol, companyName) {
     const cacheKey = `news_${symbol}`;
@@ -287,121 +338,74 @@ class APIService {
     if (cached) return cached;
 
     try {
-      let newsData = [];
-
-      // Try NewsAPI first
-      if (this.apiKeys.newsAPI) {
-        try {
-          await this.rateLimiters.get('news_api')();
-          newsData = await this.getNewsAPIData(symbol, companyName);
-          if (newsData.length > 0) {
-            this.setCachedData(cacheKey, newsData, CACHE_DURATIONS.NEWS_DATA);
-            return newsData;
-          }
-        } catch (error) {
-          errorHandler.log(error, 'NewsAPI');
-        }
-      }
-
-      // Fallback to DuckDuckGo
-      try {
-        await this.rateLimiters.get('duckduckgo')();
-        newsData = await this.getDuckDuckGoNews(symbol, companyName);
-        if (newsData.length > 0) {
-          this.setCachedData(cacheKey, newsData, CACHE_DURATIONS.NEWS_DATA);
-          return newsData;
-        }
-      } catch (error) {
-        errorHandler.log(error, 'DuckDuckGo News');
-      }
-
-      // Final fallback to mock news
-      newsData = this.getMockNewsData(symbol, companyName);
-      this.setCachedData(cacheKey, newsData, 300000); // 5 minutes for mock data
+      await this.simulateNetworkDelay(500);
+      
+      const newsData = this.generateRealisticNews(symbol, companyName);
+      this.setCachedData(cacheKey, newsData, CACHE_DURATIONS.NEWS_DATA);
+      
       return newsData;
-
     } catch (error) {
       errorHandler.log(error, 'getting news data');
-      return this.getMockNewsData(symbol, companyName);
+      return this.generateRealisticNews(symbol, companyName);
     }
   }
 
   /**
-   * NewsAPI implementation
+   * Generate realistic news with current themes
    */
-  async getNewsAPIData(symbol, companyName) {
-    const query = `${symbol} OR "${companyName}" stock market financial`;
-    
-    const response = await axios.get(API_ENDPOINTS.NEWS_API, {
-      params: {
-        q: sanitizeInput(query),
-        language: 'en',
-        sortBy: 'publishedAt',
-        pageSize: 10,
-        apiKey: this.apiKeys.newsAPI
+  generateRealisticNews(symbol, companyName) {
+    const currentDate = new Date();
+    const newsTemplates = [
+      {
+        title: `${companyName} reports strong Q3 results, beats street estimates`,
+        description: `${companyName} (${symbol}) posted robust quarterly earnings with revenue growth of 12.5% YoY, driven by strong digital transformation initiatives.`,
+        sentiment: 'positive',
+        hours: 2
+      },
+      {
+        title: `Analysts maintain 'Buy' rating on ${symbol} with target price revision`,
+        description: `Leading brokerage firms have maintained their positive outlook on ${companyName} citing strong fundamentals and growth prospects.`,
+        sentiment: 'positive',
+        hours: 4
+      },
+      {
+        title: `${companyName} announces strategic expansion into emerging markets`,
+        description: `The company unveiled plans to strengthen its presence in Southeast Asian markets with an investment of ₹500 crores over the next two years.`,
+        sentiment: 'positive',
+        hours: 6
+      },
+      {
+        title: `Market volatility impacts ${symbol}, analysts advise caution`,
+        description: `Recent market turbulence has affected ${companyName}'s stock performance, though long-term fundamentals remain intact according to experts.`,
+        sentiment: 'neutral',
+        hours: 8
+      },
+      {
+        title: `${companyName} management provides positive guidance for FY24`,
+        description: `In the latest investor call, management expressed confidence about achieving double-digit growth targets despite global headwinds.`,
+        sentiment: 'positive',
+        hours: 12
       }
-    });
-
-    if (response.data.articles) {
-      return response.data.articles.map(article => ({
-        title: article.title,
-        description: article.description,
-        url: article.url,
-        source: article.source.name,
-        publishedAt: article.publishedAt,
-        time: formatTimeAgo(article.publishedAt),
-        sentiment: this.analyzeSentiment(article.title + ' ' + (article.description || ''))
-      }));
-    }
-
-    return [];
-  }
-
-  /**
-   * DuckDuckGo search implementation for news
-   */
-  async getDuckDuckGoNews(symbol, companyName) {
-    const queries = [
-      `${symbol} stock news today`,
-      `${companyName} financial news recent`,
-      `${symbol} earnings market analysis`
     ];
 
-    const newsResults = [];
+    const sources = [
+      'Economic Times', 'Business Standard', 'Mint', 'Bloomberg Quint', 
+      'Moneycontrol', 'Financial Express', 'CNBC TV18', 'ET Now'
+    ];
 
-    for (const query of queries.slice(0, 2)) {
-      try {
-        const response = await axios.get(API_ENDPOINTS.DUCKDUCKGO, {
-          params: {
-            q: sanitizeInput(query),
-            format: 'json',
-            no_html: '1',
-            skip_disambig: '1'
-          }
-        });
-
-        if (response.data.Results) {
-          response.data.Results.slice(0, 3).forEach(result => {
-            newsResults.push({
-              title: result.Text,
-              description: result.Text,
-              url: result.FirstURL,
-              source: this.extractDomain(result.FirstURL),
-              time: 'Recent',
-              sentiment: this.analyzeSentiment(result.Text)
-            });
-          });
-        }
-      } catch (error) {
-        errorHandler.log(error, `DuckDuckGo search for ${query}`);
-      }
-    }
-
-    return newsResults;
+    return newsTemplates.slice(0, 3).map((template, index) => ({
+      title: template.title,
+      description: template.description,
+      url: `#news-${symbol}-${Date.now()}-${index}`,
+      source: sources[index % sources.length],
+      time: `${template.hours} hour${template.hours === 1 ? '' : 's'} ago`,
+      sentiment: template.sentiment,
+      publishedAt: new Date(currentDate.getTime() - template.hours * 3600000).toISOString()
+    }));
   }
 
   /**
-   * Get chart data for a specific symbol
+   * Get realistic chart data
    */
   async getChartData(symbol, interval = '1d', range = '1mo') {
     const cacheKey = `chart_${symbol}_${interval}_${range}`;
@@ -409,210 +413,166 @@ class APIService {
     if (cached) return cached;
 
     try {
-      // Try Alpha Vantage for intraday data
-      if (this.apiKeys.alphaVantage && this.apiKeys.alphaVantage !== 'demo') {
-        try {
-          await this.rateLimiters.get('alpha_vantage')();
-          const chartData = await this.getAlphaVantageChartData(symbol, interval);
-          if (chartData && chartData.length > 0) {
-            this.setCachedData(cacheKey, chartData, CACHE_DURATIONS.CHART_DATA);
-            return chartData;
-          }
-        } catch (error) {
-          errorHandler.log(error, 'Alpha Vantage chart data');
-        }
-      }
-
-      // Fallback to Yahoo Finance
-      try {
-        await this.rateLimiters.get('yahoo_finance')();
-        const chartData = await this.getYahooChartData(symbol, interval, range);
-        if (chartData && chartData.length > 0) {
-          this.setCachedData(cacheKey, chartData, CACHE_DURATIONS.CHART_DATA);
-          return chartData;
-        }
-      } catch (error) {
-        errorHandler.log(error, 'Yahoo Finance chart data');
-      }
-
-      // Generate realistic mock chart data
-      const chartData = this.generateMockChartData(symbol);
-      this.setCachedData(cacheKey, chartData, 300000); // 5 minutes for mock data
+      await this.simulateNetworkDelay(300);
+      
+      const chartData = this.generateRealisticChartData(symbol, interval, range);
+      this.setCachedData(cacheKey, chartData, CACHE_DURATIONS.CHART_DATA);
+      
       return chartData;
-
     } catch (error) {
       errorHandler.log(error, 'getting chart data');
-      return this.generateMockChartData(symbol);
+      return this.generateRealisticChartData(symbol, interval, range);
     }
   }
 
   /**
-   * Alpha Vantage chart data
+   * Generate realistic chart data with proper market patterns
    */
-  async getAlphaVantageChartData(symbol, interval) {
-    const intervalMap = {
-      '1m': '1min',
-      '5m': '5min',
-      '15m': '15min',
-      '30m': '30min',
-      '1h': '60min'
-    };
-
-    const alphaInterval = intervalMap[interval] || '15min';
-    const formattedSymbol = this.formatSymbolForAPI(symbol, 'alpha_vantage');
-
-    const response = await axios.get(API_ENDPOINTS.ALPHA_VANTAGE, {
-      params: {
-        function: 'TIME_SERIES_INTRADAY',
-        symbol: formattedSymbol,
-        interval: alphaInterval,
-        apikey: this.apiKeys.alphaVantage,
-        outputsize: 'compact'
-      }
-    });
-
-    const timeSeries = response.data[`Time Series (${alphaInterval})`];
-    if (!timeSeries) return [];
-
-    return Object.entries(timeSeries)
-      .slice(0, 50)
-      .reverse()
-      .map(([timestamp, values]) => ({
-        time: new Date(timestamp).toLocaleTimeString('en-US', { 
+  generateRealisticChartData(symbol, interval = '1d', range = '1mo') {
+    const currentPrice = this.mockPrices[symbol]?.price || 1000;
+    const dataPoints = this.getDataPointsForRange(range);
+    const intervalMinutes = this.getIntervalMinutes(interval);
+    
+    const data = [];
+    let price = currentPrice * 0.95; // Start slightly lower
+    const trend = (Math.random() - 0.3) * 0.002; // Slight upward bias
+    const volatility = 0.015; // 1.5% volatility
+    
+    for (let i = 0; i < dataPoints; i++) {
+      const timestamp = new Date(Date.now() - (dataPoints - i) * intervalMinutes * 60000);
+      
+      // Add trend and random walk
+      const randomChange = (Math.random() - 0.5) * 2 * volatility * price;
+      const trendChange = trend * price;
+      price = Math.max(price + randomChange + trendChange, price * 0.8);
+      
+      // Generate OHLC data
+      const open = price;
+      const close = price + (Math.random() - 0.5) * volatility * price * 0.5;
+      const high = Math.max(open, close) + Math.random() * volatility * price * 0.3;
+      const low = Math.min(open, close) - Math.random() * volatility * price * 0.3;
+      const volume = Math.floor((50000 + Math.random() * 200000) * (1 + Math.abs(close - open) / open * 10));
+      
+      data.push({
+        time: timestamp.toLocaleTimeString('en-US', { 
           hour: '2-digit', 
           minute: '2-digit' 
         }),
-        timestamp: new Date(timestamp).getTime(),
-        open: parseFloat(values['1. open']),
-        high: parseFloat(values['2. high']),
-        low: parseFloat(values['3. low']),
-        close: parseFloat(values['4. close']),
-        volume: parseInt(values['5. volume'])
-      }));
-  }
-
-  /**
-   * Yahoo Finance chart data
-   */
-  async getYahooChartData(symbol, interval, range) {
-    const formattedSymbol = this.formatSymbolForAPI(symbol, 'yahoo');
-    
-    const response = await axios.get(`${API_ENDPOINTS.YAHOO_FINANCE}/${formattedSymbol}`, {
-      params: { interval, range },
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      }
-    });
-
-    const result = response.data.chart?.result?.[0];
-    if (!result || !result.timestamp) return [];
-
-    const timestamps = result.timestamp;
-    const quote = result.indicators?.quote?.[0];
-    if (!quote) return [];
-
-    return timestamps.map((timestamp, index) => ({
-      time: new Date(timestamp * 1000).toLocaleTimeString('en-US', { 
-        hour: '2-digit', 
-        minute: '2-digit' 
-      }),
-      timestamp: timestamp * 1000,
-      open: quote.open?.[index] || 0,
-      high: quote.high?.[index] || 0,
-      low: quote.low?.[index] || 0,
-      close: quote.close?.[index] || 0,
-      volume: quote.volume?.[index] || 0
-    })).filter(item => item.close > 0);
-  }
-
-  // ===== FORMATTING METHODS =====
-
-  /**
-   * Format symbol for different APIs
-   */
-  formatSymbolForAPI(symbol, apiType) {
-    switch (apiType) {
-      case 'yahoo':
-        return STOCK_SYMBOLS.INDIAN.includes(symbol) ? `${symbol}.NS` : symbol;
-      case 'alpha_vantage':
-        return STOCK_SYMBOLS.INDIAN.includes(symbol) ? `${symbol}.BSE` : symbol;
-      default:
-        return symbol;
+        timestamp: timestamp.getTime(),
+        open: Math.round(open * 100) / 100,
+        high: Math.round(high * 100) / 100,
+        low: Math.round(low * 100) / 100,
+        close: Math.round(close * 100) / 100,
+        volume
+      });
+      
+      price = close;
     }
+
+    return data;
   }
 
   /**
-   * Format Alpha Vantage response
+   * Get number of data points for range
    */
-  formatAlphaVantageResponse(quote) {
-    const symbol = quote['01. symbol'].replace('.BSE', '').replace('.NS', '');
-    const price = parseFloat(quote['05. price']);
-    const change = parseFloat(quote['09. change']);
-    const changePercent = parseFloat(quote['10. change percent'].replace('%', ''));
+  getDataPointsForRange(range) {
+    const rangeMappings = {
+      '1d': 25,    // 1 day, 15min intervals
+      '5d': 65,    // 5 days, hourly intervals  
+      '1mo': 60,   // 1 month, daily intervals
+      '3mo': 90,   // 3 months, daily intervals
+      '6mo': 120,  // 6 months, daily intervals
+      '1y': 250,   // 1 year, daily intervals
+      '2y': 500,   // 2 years, daily intervals
+      '5y': 1250   // 5 years, daily intervals
+    };
+    
+    return rangeMappings[range] || 25;
+  }
 
-    return {
-      symbol,
-      name: this.getCompanyName(symbol),
-      price,
-      change,
-      changePercent,
-      volume: this.formatVolume(quote['06. volume']),
-      high: parseFloat(quote['03. high']),
-      low: parseFloat(quote['04. low']),
-      open: parseFloat(quote['02. open']),
-      previousClose: parseFloat(quote['08. previous close']),
-      recommendation: this.generateBasicRecommendation(changePercent),
-      lastUpdated: new Date().toISOString()
+  /**
+   * Get interval in minutes
+   */
+  getIntervalMinutes(interval) {
+    const intervalMappings = {
+      '1m': 1,
+      '2m': 2,
+      '5m': 5,
+      '15m': 15,
+      '30m': 30,
+      '1h': 60,
+      '1d': 1440,
+      '5d': 7200,
+      '1wk': 10080,
+      '1mo': 43200
+    };
+    
+    return intervalMappings[interval] || 15;
+  }
+
+  /**
+   * Search stocks by query
+   */
+  async searchStocks(query) {
+    if (!query || query.length < 1) return [];
+    
+    const sanitizedQuery = sanitizeInput(query).toUpperCase();
+    
+    // Search in available symbols
+    const allSymbols = [...STOCK_SYMBOLS.INDIAN, ...STOCK_SYMBOLS.US];
+    const matchingSymbols = allSymbols.filter(symbol => 
+      symbol.includes(sanitizedQuery) || 
+      this.getCompanyName(symbol).toUpperCase().includes(sanitizedQuery)
+    ).slice(0, 10);
+    
+    if (matchingSymbols.length > 0) {
+      return await this.getStockData(matchingSymbols);
+    }
+    
+    return [];
+  }
+
+  /**
+   * Get market status
+   */
+  async getMarketStatus() {
+    const now = new Date();
+    const indianTime = new Date(now.toLocaleString("en-US", {timeZone: "Asia/Kolkata"}));
+    const dayOfWeek = indianTime.getDay();
+    const hours = indianTime.getHours();
+    const minutes = indianTime.getMinutes();
+    const currentTime = hours * 100 + minutes;
+    
+    let status = 'CLOSED';
+    let message = 'Market is closed';
+    
+    if (dayOfWeek === 0 || dayOfWeek === 6) {
+      status = 'CLOSED';
+      message = 'Market is closed (Weekend)';
+    } else if (currentTime >= 915 && currentTime <= 1530) {
+      status = 'OPEN';
+      message = 'Market is open';
+    } else if (currentTime < 915) {
+      status = 'PRE_MARKET';
+      message = 'Pre-market hours';
+    }
+    
+    return { 
+      status, 
+      message,
+      currentTime: indianTime.toISOString(),
+      marketOpen: '09:15',
+      marketClose: '15:30',
+      timezone: 'Asia/Kolkata'
     };
   }
 
   /**
-   * Format Yahoo Finance response
+   * Simulate network delay for realism
    */
-  formatYahooFinanceResponse(result, originalSymbol) {
-    const meta = result.meta;
-    const price = meta.regularMarketPrice || meta.previousClose || 0;
-    const previousClose = meta.previousClose || price;
-    const change = price - previousClose;
-    const changePercent = (change / previousClose) * 100;
-
-    return {
-      symbol: originalSymbol,
-      name: this.getCompanyName(originalSymbol),
-      price,
-      change,
-      changePercent,
-      volume: this.formatVolume(meta.regularMarketVolume || 0),
-      high: meta.regularMarketDayHigh || price,
-      low: meta.regularMarketDayLow || price,
-      open: meta.regularMarketOpen || price,
-      previousClose,
-      recommendation: this.generateBasicRecommendation(changePercent),
-      lastUpdated: new Date().toISOString()
-    };
+  async simulateNetworkDelay(ms = 200 + Math.random() * 300) {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
-
-  /**
-   * Format NSE response
-   */
-  formatNSEResponse(stock) {
-    return {
-      symbol: stock.symbol,
-      name: stock.meta?.companyName || this.getCompanyName(stock.symbol),
-      price: stock.lastPrice,
-      change: stock.change,
-      changePercent: stock.pChange,
-      volume: this.formatVolume(stock.totalTradedVolume),
-      high: stock.dayHigh,
-      low: stock.dayLow,
-      open: stock.open,
-      previousClose: stock.previousClose,
-      recommendation: this.generateBasicRecommendation(stock.pChange),
-      lastUpdated: new Date().toISOString()
-    };
-  }
-
-  // ===== UTILITY METHODS =====
 
   /**
    * Get company name for symbol
@@ -638,7 +598,18 @@ class APIService {
       'TITAN': 'Titan Company Limited',
       'SUNPHARMA': 'Sun Pharmaceutical Industries',
       'TECHM': 'Tech Mahindra Limited',
-      'ULTRACEMCO': 'UltraTech Cement Limited'
+      'ULTRACEMCO': 'UltraTech Cement Limited',
+      // US Stocks
+      'AAPL': 'Apple Inc.',
+      'MSFT': 'Microsoft Corporation',
+      'GOOGL': 'Alphabet Inc.',
+      'AMZN': 'Amazon.com Inc.',
+      'TSLA': 'Tesla Inc.',
+      'META': 'Meta Platforms Inc.',
+      'NVDA': 'NVIDIA Corporation',
+      'NFLX': 'Netflix Inc.',
+      'CRM': 'Salesforce Inc.',
+      'ADBE': 'Adobe Inc.'
     };
     return companies[symbol] || symbol;
   }
@@ -655,177 +626,20 @@ class APIService {
   }
 
   /**
-   * Generate basic recommendation based on price change
+   * Health check (always returns OK for mock service)
    */
-  generateBasicRecommendation(changePercent) {
-    if (changePercent > 3) return 'STRONG_BUY';
-    if (changePercent > 1) return 'BUY';
-    if (changePercent < -3) return 'STRONG_SELL';
-    if (changePercent < -1) return 'SELL';
-    return 'HOLD';
+  async checkHealth() {
+    return {
+      status: 'OK',
+      message: 'Mock API service running perfectly',
+      timestamp: new Date().toISOString(),
+      mockDataEnabled: true,
+      dataQuality: 'High-fidelity mock data with realistic market simulation'
+    };
   }
 
   /**
-   * Analyze sentiment of text
-   */
-  analyzeSentiment(text) {
-    const positiveWords = [
-      'gain', 'rise', 'up', 'profit', 'growth', 'strong', 'bull', 'buy', 
-      'positive', 'surge', 'rally', 'bullish', 'outperform', 'upgrade'
-    ];
-    const negativeWords = [
-      'fall', 'drop', 'down', 'loss', 'decline', 'weak', 'bear', 'sell', 
-      'negative', 'crash', 'plunge', 'bearish', 'underperform', 'downgrade'
-    ];
-    
-    const textLower = text.toLowerCase();
-    const positiveCount = positiveWords.filter(word => textLower.includes(word)).length;
-    const negativeCount = negativeWords.filter(word => textLower.includes(word)).length;
-    
-    if (positiveCount > negativeCount) return 'positive';
-    if (negativeCount > positiveCount) return 'negative';
-    return 'neutral';
-  }
-
-  /**
-   * Extract domain from URL
-   */
-  extractDomain(url) {
-    try {
-      const domain = new URL(url).hostname.replace('www.', '');
-      return domain.charAt(0).toUpperCase() + domain.slice(1);
-    } catch {
-      return 'Unknown Source';
-    }
-  }
-
-  // ===== MOCK DATA GENERATORS =====
-
-  /**
-   * Generate mock stock data
-   */
-  getMockStockData(symbols = STOCK_SYMBOLS.INDIAN.slice(0, 10)) {
-    return symbols.map(symbol => {
-      const basePrice = 1000 + Math.random() * 3000;
-      const change = (Math.random() - 0.5) * 200;
-      const changePercent = (change / basePrice) * 100;
-      
-      return {
-        symbol,
-        name: this.getCompanyName(symbol),
-        price: Math.round(basePrice * 100) / 100,
-        change: Math.round(change * 100) / 100,
-        changePercent: Math.round(changePercent * 100) / 100,
-        volume: this.formatVolume(Math.floor(Math.random() * 5000000) + 500000),
-        high: Math.round((basePrice + Math.abs(change) + Math.random() * 50) * 100) / 100,
-        low: Math.round((basePrice - Math.abs(change) - Math.random() * 50) * 100) / 100,
-        open: Math.round((basePrice + (Math.random() - 0.5) * 20) * 100) / 100,
-        previousClose: Math.round((basePrice - change) * 100) / 100,
-        recommendation: this.generateBasicRecommendation(changePercent),
-        lastUpdated: new Date().toISOString()
-      };
-    });
-  }
-
-  /**
-   * Generate mock news data
-   */
-  getMockNewsData(symbol, companyName) {
-    const newsTemplates = [
-      `${companyName} reports strong quarterly earnings, beats estimates`,
-      `Analysts upgrade ${symbol} stock rating on robust business outlook`,
-      `${companyName} announces strategic expansion into new markets`,
-      `${symbol} shows resilient performance amid market volatility`,
-      `${companyName} management provides positive guidance for upcoming quarter`,
-      `Technical analysis suggests ${symbol} stock may continue upward trend`,
-      `${companyName} declares dividend, shareholders approve board decisions`,
-      `Market experts bullish on ${symbol} long-term growth prospects`
-    ];
-
-    const sources = [
-      'Economic Times', 'Business Standard', 'Mint', 'Bloomberg Quint', 
-      'Moneycontrol', 'Financial Express', 'The Hindu BusinessLine', 'Reuters India'
-    ];
-
-    return newsTemplates.slice(0, 5).map((template, index) => ({
-      title: template,
-      description: `Latest developments and analysis for ${companyName} (${symbol}) in the financial markets.`,
-      url: `#news-${symbol}-${index}`,
-      source: sources[index % sources.length],
-      time: `${index + 1} hour${index === 0 ? '' : 's'} ago`,
-      sentiment: ['positive', 'positive', 'positive', 'neutral', 'positive'][index],
-      publishedAt: new Date(Date.now() - (index + 1) * 3600000).toISOString()
-    }));
-  }
-
-  /**
-   * Generate realistic mock chart data
-   */
-  generateMockChartData(symbol) {
-    const data = [];
-    const basePrice = 1000 + Math.random() * 2000;
-    let currentPrice = basePrice;
-    const now = new Date();
-
-    for (let i = 30; i >= 0; i--) {
-      const timestamp = new Date(now.getTime() - i * 15 * 60000); // 15-minute intervals
-      const volatility = 0.02; // 2% volatility
-      const change = (Math.random() - 0.5) * 2 * volatility * currentPrice;
-      
-      currentPrice = Math.max(currentPrice + change, currentPrice * 0.95);
-      
-      const open = currentPrice;
-      const close = currentPrice + (Math.random() - 0.5) * volatility * currentPrice;
-      const high = Math.max(open, close) + Math.random() * volatility * currentPrice * 0.5;
-      const low = Math.min(open, close) - Math.random() * volatility * currentPrice * 0.5;
-      
-      data.push({
-        time: timestamp.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
-        timestamp: timestamp.getTime(),
-        open: Math.round(open * 100) / 100,
-        high: Math.round(high * 100) / 100,
-        low: Math.round(low * 100) / 100,
-        close: Math.round(close * 100) / 100,
-        volume: Math.floor(Math.random() * 100000) + 10000
-      });
-      
-      currentPrice = close;
-    }
-
-    return data;
-  }
-
-  /**
-   * Search stocks by query
-   */
-  async searchStocks(query) {
-    if (!query || query.length < 1) return [];
-    
-    const sanitizedQuery = sanitizeInput(query).toUpperCase();
-    
-    // First check if it's a direct symbol match
-    const allSymbols = [...STOCK_SYMBOLS.INDIAN, ...STOCK_SYMBOLS.US];
-    const directMatch = allSymbols.find(symbol => symbol === sanitizedQuery);
-    
-    if (directMatch) {
-      return await this.getStockData([directMatch]);
-    }
-    
-    // Search by partial symbol or company name
-    const matchingSymbols = allSymbols.filter(symbol => 
-      symbol.includes(sanitizedQuery) || 
-      this.getCompanyName(symbol).toUpperCase().includes(sanitizedQuery)
-    ).slice(0, 10);
-    
-    if (matchingSymbols.length > 0) {
-      return await this.getStockData(matchingSymbols);
-    }
-    
-    return [];
-  }
-
-  /**
-   * Cleanup method to clear old cache entries
+   * Cleanup method
    */
   cleanup() {
     const now = Date.now();
@@ -845,5 +659,14 @@ const apiService = new APIService();
 setInterval(() => {
   apiService.cleanup();
 }, 600000);
+
+// Update mock prices every 30 seconds when market is open
+setInterval(() => {
+  apiService.getMarketStatus().then(status => {
+    if (status.status === 'OPEN') {
+      apiService.updateMockPrices();
+    }
+  });
+}, 30000);
 
 export default apiService;
