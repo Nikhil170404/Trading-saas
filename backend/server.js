@@ -51,10 +51,23 @@ app.use('/api/search', createRateLimit(60 * 1000, 30, 'Too many search requests'
 // ===== API CONFIGURATION =====
 
 const API_KEYS = {
-  ALPHA_VANTAGE: process.env.ALPHA_VANTAGE_API_KEY,
   NEWS_API: process.env.NEWS_API_KEY,
-  FINNHUB: process.env.FINNHUB_API_KEY,
-  POLYGON: process.env.POLYGON_API_KEY
+  UPSTOX_ACCESS_TOKEN: process.env.UPSTOX_ACCESS_TOKEN,
+  UPSTOX_API_KEY: process.env.UPSTOX_API_KEY,
+  UPSTOX_API_SECRET: process.env.UPSTOX_API_SECRET
+};
+
+// Upstox configuration
+const UPSTOX_CONFIG = {
+  baseURL: 'https://api.upstox.com/v2',
+  instrumentsURL: 'https://assets.upstox.com/market-quote/instruments/exchange/complete.json'
+};
+
+// Yahoo Finance URLs
+const YAHOO_FINANCE_URLS = {
+  chart: 'https://query1.finance.yahoo.com/v8/finance/chart',
+  quote: 'https://query2.finance.yahoo.com/v1/finance/quoteBasic',
+  search: 'https://query1.finance.yahoo.com/v1/finance/search'
 };
 
 // Validate API keys on startup
@@ -74,7 +87,7 @@ const validateApiKeys = () => {
   return missing.length === 0;
 };
 
-// Enhanced API configuration with proper headers for real APIs
+// Enhanced API configuration with proper headers
 const getApiHeaders = (type) => {
   const baseHeaders = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -92,15 +105,11 @@ const getApiHeaders = (type) => {
         'Referer': 'https://finance.yahoo.com/',
         'Origin': 'https://finance.yahoo.com'
       };
-    case 'alphavantage':
+    case 'upstox':
       return {
         ...baseHeaders,
-        'Referer': 'https://www.alphavantage.co/'
-      };
-    case 'finnhub':
-      return {
-        ...baseHeaders,
-        'Referer': 'https://finnhub.io/'
+        'Authorization': `Bearer ${API_KEYS.UPSTOX_ACCESS_TOKEN}`,
+        'Content-Type': 'application/json'
       };
     default:
       return baseHeaders;
@@ -126,7 +135,7 @@ const handleApiError = (error, res, source, details = {}) => {
         message = 'API authentication failed - please check API keys';
         break;
       case 403:
-        message = 'API access forbidden - check API permissions';
+        message = 'API access forbidden - check API permissions or rate limits';
         break;
       case 429:
         message = 'API rate limit exceeded - please try again later';
@@ -138,7 +147,7 @@ const handleApiError = (error, res, source, details = {}) => {
         message = `${source} API Error: ${error.response.statusText}`;
     }
     
-    return res.status(status).json({
+    return res.status(status >= 500 ? 503 : status).json({
       error: message,
       source,
       status,
@@ -161,7 +170,8 @@ const CACHE_DURATIONS = {
   STOCK_DATA: 2 * 60 * 1000,      // 2 minutes
   NEWS_DATA: 15 * 60 * 1000,     // 15 minutes
   SEARCH_DATA: 30 * 60 * 1000,   // 30 minutes
-  CHART_DATA: 5 * 60 * 1000      // 5 minutes
+  CHART_DATA: 5 * 60 * 1000,     // 5 minutes
+  INSTRUMENTS: 24 * 60 * 60 * 1000 // 24 hours
 };
 
 const cacheMiddleware = (duration) => (req, res, next) => {
@@ -197,9 +207,179 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000); // Clean every 5 minutes
 
-// ===== REAL API IMPLEMENTATIONS =====
+// ===== UPSTOX API IMPLEMENTATIONS =====
 
-// Multiple stock data with intelligent fallback between real APIs
+// Load Upstox instruments cache
+let upstoxInstruments = new Map();
+
+async function loadUpstoxInstruments() {
+  try {
+    const response = await axios.get(UPSTOX_CONFIG.instrumentsURL, {
+      headers: getApiHeaders('yahoo'),
+      timeout: 30000
+    });
+
+    if (response.data) {
+      upstoxInstruments.clear();
+      response.data.forEach(instrument => {
+        if (instrument.segment === 'NSE_EQ' || instrument.segment === 'BSE_EQ') {
+          upstoxInstruments.set(instrument.tradingsymbol, {
+            instrument_key: instrument.instrument_key,
+            name: instrument.name,
+            exchange: instrument.exchange,
+            segment: instrument.segment
+          });
+        }
+      });
+      console.log(`✅ Loaded ${upstoxInstruments.size} Upstox instruments`);
+    }
+  } catch (error) {
+    console.warn('Failed to load Upstox instruments:', error.message);
+  }
+}
+
+// Load instruments on startup
+loadUpstoxInstruments();
+
+// Upstox API request helper
+async function makeUpstoxRequest(endpoint, options = {}) {
+  if (!API_KEYS.UPSTOX_ACCESS_TOKEN) {
+    throw new Error('Upstox access token not configured');
+  }
+
+  const url = `${UPSTOX_CONFIG.baseURL}${endpoint}`;
+  const config = {
+    ...options,
+    headers: getApiHeaders('upstox'),
+    timeout: 10000
+  };
+
+  const response = await axios(url, config);
+  return response.data;
+}
+
+// Get stock data from Upstox
+async function fetchFromUpstox(symbols) {
+  if (!API_KEYS.UPSTOX_ACCESS_TOKEN) {
+    throw new Error('Upstox access token not configured');
+  }
+
+  const results = [];
+  
+  for (const symbol of symbols.slice(0, 10)) {
+    try {
+      const instrumentData = upstoxInstruments.get(symbol);
+      if (!instrumentData) continue;
+
+      const response = await makeUpstoxRequest(
+        `/market-quote/quotes?instrument_key=${instrumentData.instrument_key}`
+      );
+
+      if (response.status === 'success' && response.data) {
+        const data = Object.values(response.data)[0];
+        
+        results.push({
+          symbol: symbol,
+          name: instrumentData.name,
+          price: Math.round((data.last_price || 0) * 100) / 100,
+          change: Math.round((data.last_price - data.previous_close || 0) * 100) / 100,
+          changePercent: Math.round((data.previous_close ? 
+            ((data.last_price - data.previous_close) / data.previous_close) * 100 : 0) * 100) / 100,
+          volume: data.volume || 0,
+          high: Math.round((data.ohlc?.high || data.last_price || 0) * 100) / 100,
+          low: Math.round((data.ohlc?.low || data.last_price || 0) * 100) / 100,
+          open: Math.round((data.ohlc?.open || data.previous_close || 0) * 100) / 100,
+          previousClose: Math.round((data.previous_close || data.last_price || 0) * 100) / 100,
+          source: 'Upstox'
+        });
+      }
+      
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+    } catch (error) {
+      console.warn(`Upstox failed for ${symbol}:`, error.message);
+    }
+  }
+  
+  return results;
+}
+
+// ===== YAHOO FINANCE IMPLEMENTATIONS =====
+
+// Convert Indian symbols to Yahoo format
+function convertToYahooSymbol(symbol) {
+  const yahooSymbolMap = {
+    'RELIANCE': 'RELIANCE.NS',
+    'TCS': 'TCS.NS',
+    'INFY': 'INFY.NS',
+    'HDFCBANK': 'HDFCBANK.NS',
+    'ICICIBANK': 'ICICIBANK.NS',
+    'HINDUNILVR': 'HINDUNILVR.NS',
+    'BAJFINANCE': 'BAJFINANCE.NS',
+    'KOTAKBANK': 'KOTAKBANK.NS',
+    'LT': 'LT.NS',
+    'ASIANPAINT': 'ASIANPAINT.NS',
+    'MARUTI': 'MARUTI.NS',
+    'SBIN': 'SBIN.NS',
+    'NESTLEIND': 'NESTLEIND.NS',
+    'WIPRO': 'WIPRO.NS',
+    'HCLTECH': 'HCLTECH.NS',
+    'AXISBANK': 'AXISBANK.NS',
+    'TITAN': 'TITAN.NS',
+    'SUNPHARMA': 'SUNPHARMA.NS',
+    'TECHM': 'TECHM.NS',
+    'ULTRACEMCO': 'ULTRACEMCO.NS'
+  };
+
+  return yahooSymbolMap[symbol] || `${symbol}.NS`;
+}
+
+// Fetch stock data from Yahoo Finance
+async function fetchFromYahoo(symbols) {
+  const results = [];
+  
+  for (const symbol of symbols.slice(0, 10)) {
+    try {
+      const yahooSymbol = convertToYahooSymbol(symbol);
+      
+      const response = await axios.get(
+        `${YAHOO_FINANCE_URLS.quote}?symbols=${yahooSymbol}`,
+        {
+          headers: getApiHeaders('yahoo'),
+          timeout: 8000
+        }
+      );
+
+      const quoteData = response.data?.quoteResponse?.result?.[0];
+      
+      if (quoteData && quoteData.regularMarketPrice) {
+        results.push({
+          symbol: symbol,
+          name: quoteData.displayName || quoteData.shortName || getCompanyName(symbol),
+          price: Math.round((quoteData.regularMarketPrice || 0) * 100) / 100,
+          change: Math.round((quoteData.regularMarketChange || 0) * 100) / 100,
+          changePercent: Math.round((quoteData.regularMarketChangePercent || 0) * 100) / 100,
+          high: Math.round((quoteData.regularMarketDayHigh || quoteData.regularMarketPrice || 0) * 100) / 100,
+          low: Math.round((quoteData.regularMarketDayLow || quoteData.regularMarketPrice || 0) * 100) / 100,
+          open: Math.round((quoteData.regularMarketOpen || quoteData.regularMarketPreviousClose || 0) * 100) / 100,
+          previousClose: Math.round((quoteData.regularMarketPreviousClose || quoteData.regularMarketPrice || 0) * 100) / 100,
+          volume: quoteData.regularMarketVolume || 0,
+          source: 'Yahoo Finance'
+        });
+      }
+      
+      await new Promise(resolve => setTimeout(resolve, 200));
+      
+    } catch (error) {
+      console.warn(`Yahoo Finance failed for ${symbol}:`, error.message);
+    }
+  }
+  
+  return results;
+}
+
+// ===== STOCK DATA ENDPOINT =====
+
 app.post('/api/stocks/batch', cacheMiddleware(CACHE_DURATIONS.STOCK_DATA), async (req, res) => {
   try {
     const { symbols, source = 'auto' } = req.body;
@@ -224,8 +404,8 @@ app.post('/api/stocks/batch', cacheMiddleware(CACHE_DURATIONS.STOCK_DATA), async
     const errors = [];
     let successfulRequests = 0;
     
-    // Try different real API sources in order of preference
-    const sources = source === 'auto' ? ['finnhub', 'alpha_vantage', 'polygon'] : [source];
+    // Try different sources in order of preference
+    const sources = source === 'auto' ? ['upstox', 'yahoo'] : [source];
     
     for (const currentSource of sources) {
       if (successfulRequests >= symbols.length) break;
@@ -240,14 +420,11 @@ app.post('/api/stocks/batch', cacheMiddleware(CACHE_DURATIONS.STOCK_DATA), async
         let sourceResults = [];
         
         switch (currentSource) {
-          case 'finnhub':
-            sourceResults = await fetchFromFinnhub(remainingSymbols);
+          case 'upstox':
+            sourceResults = await fetchFromUpstox(remainingSymbols);
             break;
-          case 'alpha_vantage':
-            sourceResults = await fetchFromAlphaVantage(remainingSymbols);
-            break;
-          case 'polygon':
-            sourceResults = await fetchFromPolygon(remainingSymbols);
+          case 'yahoo':
+            sourceResults = await fetchFromYahoo(remainingSymbols);
             break;
           default:
             throw new Error(`Unknown source: ${currentSource}`);
@@ -281,7 +458,8 @@ app.post('/api/stocks/batch', cacheMiddleware(CACHE_DURATIONS.STOCK_DATA), async
     const enhancedResults = results.map(stock => ({
       ...stock,
       lastUpdated: new Date().toISOString(),
-      source: stock.source || 'multiple'
+      recommendation: generateRecommendation(stock),
+      volume: formatVolume(stock.volume)
     }));
     
     res.json({
@@ -298,156 +476,124 @@ app.post('/api/stocks/batch', cacheMiddleware(CACHE_DURATIONS.STOCK_DATA), async
   }
 });
 
-// Finnhub implementation (Primary - most reliable for real-time data)
-async function fetchFromFinnhub(symbols) {
-  if (!API_KEYS.FINNHUB) {
-    throw new Error('Finnhub API key not configured');
-  }
-  
-  const results = [];
-  
-  for (const symbol of symbols.slice(0, 10)) { // Limit for rate limits
-    try {
-      const response = await axios.get('https://finnhub.io/api/v1/quote', {
-        params: {
-          symbol: symbol,
-          token: API_KEYS.FINNHUB
-        },
-        headers: getApiHeaders('finnhub'),
-        timeout: 8000
-      });
-      
-      const data = response.data;
-      
-      if (data.c && data.c > 0) { // Current price exists and is valid
-        results.push({
-          symbol: symbol,
-          name: getCompanyName(symbol),
-          price: Math.round(data.c * 100) / 100,
-          change: Math.round((data.d || 0) * 100) / 100,
-          changePercent: Math.round((data.dp || 0) * 100) / 100,
-          volume: 0, // Finnhub quote doesn't include volume
-          high: Math.round((data.h || data.c) * 100) / 100,
-          low: Math.round((data.l || data.c) * 100) / 100,
-          open: Math.round((data.o || data.pc) * 100) / 100,
-          previousClose: Math.round((data.pc || data.c) * 100) / 100,
-          source: 'Finnhub'
-        });
-      }
-      
-      // Rate limiting delay
-      await new Promise(resolve => setTimeout(resolve, 200));
-      
-    } catch (error) {
-      console.warn(`Finnhub failed for ${symbol}:`, error.message);
-    }
-  }
-  
-  return results;
-}
+// ===== CHART DATA ENDPOINT =====
 
-// Alpha Vantage implementation (Secondary)
-async function fetchFromAlphaVantage(symbols) {
-  if (!API_KEYS.ALPHA_VANTAGE) {
-    throw new Error('Alpha Vantage API key not configured');
-  }
-  
-  const results = [];
-  
-  for (const symbol of symbols.slice(0, 5)) { // Limit to avoid rate limits
+app.get('/api/chart/:symbol', cacheMiddleware(CACHE_DURATIONS.CHART_DATA), async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const { interval = '15m', range = '1d' } = req.query;
+    
+    console.log(`📊 Fetching chart data for ${symbol}`);
+    
+    let chartData = null;
+    
+    // Try Yahoo Finance for chart data
     try {
-      const response = await axios.get('https://www.alphavantage.co/query', {
-        params: {
-          function: 'GLOBAL_QUOTE',
-          symbol: `${symbol}.BSE`,
-          apikey: API_KEYS.ALPHA_VANTAGE
-        },
-        headers: getApiHeaders('alphavantage'),
-        timeout: 10000
-      });
+      const yahooSymbol = convertToYahooSymbol(symbol);
       
-      const quote = response.data['Global Quote'];
+      // Calculate period timestamps
+      const endTime = Math.floor(Date.now() / 1000);
+      const periodMap = {
+        '1d': 24 * 60 * 60,
+        '5d': 5 * 24 * 60 * 60,
+        '1mo': 30 * 24 * 60 * 60,
+        '3mo': 90 * 24 * 60 * 60,
+        '6mo': 180 * 24 * 60 * 60,
+        '1y': 365 * 24 * 60 * 60
+      };
+      const startTime = endTime - (periodMap[range] || periodMap['1d']);
+
+      const response = await axios.get(
+        `${YAHOO_FINANCE_URLS.chart}/${yahooSymbol}?period1=${startTime}&period2=${endTime}&interval=${interval}`,
+        {
+          headers: getApiHeaders('yahoo'),
+          timeout: 15000
+        }
+      );
+
+      const result = response.data?.chart?.result?.[0];
       
-      if (quote && quote['01. symbol']) {
-        const price = parseFloat(quote['05. price']) || 0;
-        const previousClose = parseFloat(quote['08. previous close']) || 0;
-        const change = price - previousClose;
-        const changePercent = previousClose ? (change / previousClose) * 100 : 0;
+      if (result && result.timestamp && result.indicators?.quote?.[0]) {
+        const timestamps = result.timestamp;
+        const quotes = result.indicators.quote[0];
         
-        results.push({
-          symbol: symbol,
-          name: getCompanyName(symbol),
-          price: Math.round(price * 100) / 100,
-          change: Math.round(change * 100) / 100,
-          changePercent: Math.round(changePercent * 100) / 100,
-          volume: parseInt(quote['06. volume']) || 0,
-          high: parseFloat(quote['03. high']) || price,
-          low: parseFloat(quote['04. low']) || price,
-          open: parseFloat(quote['02. open']) || previousClose,
-          previousClose: previousClose,
-          source: 'Alpha Vantage'
-        });
+        chartData = timestamps.map((timestamp, index) => ({
+          timestamp: timestamp * 1000,
+          time: new Date(timestamp * 1000).toLocaleTimeString('en-US', { 
+            hour: '2-digit', 
+            minute: '2-digit' 
+          }),
+          open: quotes.open[index] || 0,
+          high: quotes.high[index] || 0,
+          low: quotes.low[index] || 0,
+          close: quotes.close[index] || 0,
+          volume: quotes.volume[index] || 0
+        })).filter(item => item.close > 0);
+        
+        console.log(`✅ Got chart data from Yahoo Finance for ${symbol}`);
       }
-      
-      // Rate limiting delay
-      await new Promise(resolve => setTimeout(resolve, 12000)); // 12 seconds between calls
-      
     } catch (error) {
-      console.warn(`Alpha Vantage failed for ${symbol}:`, error.message);
+      console.warn(`Yahoo Finance chart failed for ${symbol}:`, error.message);
     }
-  }
-  
-  return results;
-}
+    
+    // Try Upstox historical data as fallback
+    if (!chartData && API_KEYS.UPSTOX_ACCESS_TOKEN) {
+      try {
+        const instrumentData = upstoxInstruments.get(symbol);
+        if (instrumentData) {
+          const toDate = new Date().toISOString().split('T')[0];
+          const fromDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
-// Polygon implementation (Tertiary)
-async function fetchFromPolygon(symbols) {
-  if (!API_KEYS.POLYGON) {
-    throw new Error('Polygon API key not configured');
-  }
-  
-  const results = [];
-  
-  for (const symbol of symbols.slice(0, 10)) {
-    try {
-      const response = await axios.get(`https://api.polygon.io/v2/last/trade/${symbol}`, {
-        params: {
-          apikey: API_KEYS.POLYGON
-        },
-        headers: getApiHeaders('polygon'),
-        timeout: 8000
+          const response = await makeUpstoxRequest(
+            `/historical-candle/${instrumentData.instrument_key}/${interval}/${toDate}/${fromDate}`
+          );
+
+          if (response.status === 'success' && response.data?.candles) {
+            chartData = response.data.candles.map(candle => ({
+              timestamp: new Date(candle[0]).getTime(),
+              time: new Date(candle[0]).toLocaleTimeString('en-US', { 
+                hour: '2-digit', 
+                minute: '2-digit' 
+              }),
+              open: candle[1],
+              high: candle[2],
+              low: candle[3],
+              close: candle[4],
+              volume: candle[5]
+            }));
+            
+            console.log(`✅ Got chart data from Upstox for ${symbol}`);
+          }
+        }
+      } catch (error) {
+        console.warn(`Upstox chart failed for ${symbol}:`, error.message);
+      }
+    }
+    
+    if (!chartData || chartData.length === 0) {
+      return res.status(404).json({
+        error: 'No chart data found',
+        message: `No chart data available for ${symbol} from any API provider`,
+        symbol: symbol
       });
-      
-      const data = response.data;
-      
-      if (data.status === 'OK' && data.results) {
-        const result = data.results;
-        results.push({
-          symbol: symbol,
-          name: getCompanyName(symbol),
-          price: Math.round((result.p || 0) * 100) / 100,
-          change: 0, // Polygon last trade doesn't include change
-          changePercent: 0,
-          volume: result.s || 0,
-          high: Math.round((result.p || 0) * 100) / 100,
-          low: Math.round((result.p || 0) * 100) / 100,
-          open: Math.round((result.p || 0) * 100) / 100,
-          previousClose: Math.round((result.p || 0) * 100) / 100,
-          source: 'Polygon'
-        });
-      }
-      
-      await new Promise(resolve => setTimeout(resolve, 300));
-      
-    } catch (error) {
-      console.warn(`Polygon failed for ${symbol}:`, error.message);
     }
+    
+    res.json({
+      status: 'ok',
+      symbol,
+      interval,
+      range,
+      data: chartData,
+      lastRefreshed: new Date().toISOString(),
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    handleApiError(error, res, 'Chart API', { symbol: req.params.symbol });
   }
-  
-  return results;
-}
+});
 
-// ===== REAL NEWS ENDPOINTS =====
+// ===== NEWS ENDPOINT =====
 
 app.get('/api/news', cacheMiddleware(CACHE_DURATIONS.NEWS_DATA), async (req, res) => {
   try {
@@ -516,121 +662,6 @@ app.get('/api/news', cacheMiddleware(CACHE_DURATIONS.NEWS_DATA), async (req, res
   }
 });
 
-// ===== REAL CHART DATA ENDPOINT =====
-
-app.get('/api/chart/:symbol', cacheMiddleware(CACHE_DURATIONS.CHART_DATA), async (req, res) => {
-  try {
-    const { symbol } = req.params;
-    const { interval = '15min', outputsize = 'compact' } = req.query;
-    
-    console.log(`📊 Fetching chart data for ${symbol}`);
-    
-    let chartData = null;
-    
-    // Try Finnhub first for chart data
-    if (API_KEYS.FINNHUB) {
-      try {
-        const endTime = Math.floor(Date.now() / 1000);
-        const startTime = endTime - (24 * 60 * 60); // 24 hours ago
-        
-        const response = await axios.get('https://finnhub.io/api/v1/stock/candle', {
-          params: {
-            symbol: symbol,
-            resolution: '15',
-            from: startTime,
-            to: endTime,
-            token: API_KEYS.FINNHUB
-          },
-          headers: getApiHeaders('finnhub'),
-          timeout: 10000
-        });
-        
-        const data = response.data;
-        
-        if (data.s === 'ok' && data.t && data.t.length > 0) {
-          chartData = data.t.map((timestamp, index) => ({
-            timestamp: timestamp * 1000,
-            time: new Date(timestamp * 1000).toLocaleTimeString('en-US', { 
-              hour: '2-digit', 
-              minute: '2-digit' 
-            }),
-            open: data.o[index],
-            high: data.h[index],
-            low: data.l[index],
-            close: data.c[index],
-            volume: data.v[index]
-          }));
-          
-          console.log(`✅ Got chart data from Finnhub for ${symbol}`);
-        }
-      } catch (error) {
-        console.warn(`Finnhub chart failed for ${symbol}:`, error.message);
-      }
-    }
-    
-    // Try Alpha Vantage as fallback
-    if (!chartData && API_KEYS.ALPHA_VANTAGE) {
-      try {
-        const response = await axios.get('https://www.alphavantage.co/query', {
-          params: {
-            function: 'TIME_SERIES_INTRADAY',
-            symbol: `${symbol}.BSE`,
-            interval,
-            outputsize,
-            apikey: API_KEYS.ALPHA_VANTAGE
-          },
-          headers: getApiHeaders('alphavantage'),
-          timeout: 15000
-        });
-        
-        const timeSeries = response.data[`Time Series (${interval})`];
-        
-        if (timeSeries) {
-          chartData = Object.entries(timeSeries)
-            .slice(0, 100)
-            .reverse()
-            .map(([timestamp, values]) => ({
-              timestamp: new Date(timestamp).getTime(),
-              time: new Date(timestamp).toLocaleTimeString('en-US', { 
-                hour: '2-digit', 
-                minute: '2-digit' 
-              }),
-              open: parseFloat(values['1. open']),
-              high: parseFloat(values['2. high']),
-              low: parseFloat(values['3. low']),
-              close: parseFloat(values['4. close']),
-              volume: parseInt(values['5. volume'])
-            }));
-          
-          console.log(`✅ Got chart data from Alpha Vantage for ${symbol}`);
-        }
-      } catch (error) {
-        console.warn(`Alpha Vantage chart failed for ${symbol}:`, error.message);
-      }
-    }
-    
-    if (!chartData || chartData.length === 0) {
-      return res.status(404).json({
-        error: 'No chart data found',
-        message: `No chart data available for ${symbol} from any API provider`,
-        symbol: symbol
-      });
-    }
-    
-    res.json({
-      status: 'ok',
-      symbol,
-      interval,
-      data: chartData,
-      lastRefreshed: new Date().toISOString(),
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    handleApiError(error, res, 'Chart API', { symbol: req.params.symbol });
-  }
-});
-
 // ===== SEARCH ENDPOINT =====
 
 app.get('/api/search/stocks', cacheMiddleware(CACHE_DURATIONS.SEARCH_DATA), async (req, res) => {
@@ -644,45 +675,30 @@ app.get('/api/search/stocks', cacheMiddleware(CACHE_DURATIONS.SEARCH_DATA), asyn
       });
     }
     
-    if (!API_KEYS.ALPHA_VANTAGE) {
-      return res.status(503).json({
-        error: 'Search API not configured',
-        message: 'Alpha Vantage API key required for search'
-      });
-    }
-    
     console.log(`🔍 Searching stocks for: ${q}`);
     
-    const response = await axios.get('https://www.alphavantage.co/query', {
-      params: {
-        function: 'SYMBOL_SEARCH',
-        keywords: q,
-        apikey: API_KEYS.ALPHA_VANTAGE
-      },
-      headers: getApiHeaders('alphavantage'),
-      timeout: 10000
-    });
+    // Search in Upstox instruments
+    const searchQuery = q.toUpperCase();
+    const results = [];
     
-    if (response.data['Error Message']) {
-      throw new Error(response.data['Error Message']);
+    for (const [symbol, data] of upstoxInstruments.entries()) {
+      if (symbol.includes(searchQuery) || data.name.toUpperCase().includes(searchQuery)) {
+        results.push({
+          symbol: symbol,
+          name: data.name,
+          exchange: data.exchange,
+          segment: data.segment,
+          instrument_key: data.instrument_key
+        });
+        
+        if (results.length >= 10) break;
+      }
     }
-    
-    const bestMatches = response.data.bestMatches || [];
     
     res.json({
       status: 'ok',
       query: q,
-      results: bestMatches.map(match => ({
-        symbol: match['1. symbol'],
-        name: match['2. name'],
-        type: match['3. type'],
-        region: match['4. region'],
-        marketOpen: match['5. marketOpen'],
-        marketClose: match['6. marketClose'],
-        timezone: match['7. timezone'],
-        currency: match['8. currency'],
-        matchScore: match['9. matchScore']
-      })),
+      results: results,
       timestamp: new Date().toISOString()
     });
     
@@ -750,6 +766,26 @@ app.get('/api/market/status', (req, res) => {
   }
 });
 
+// ===== UPSTOX INSTRUMENTS ENDPOINT =====
+
+app.get('/api/instruments', cacheMiddleware(CACHE_DURATIONS.INSTRUMENTS), async (req, res) => {
+  try {
+    const instruments = Array.from(upstoxInstruments.entries()).map(([symbol, data]) => ({
+      symbol,
+      ...data
+    }));
+    
+    res.json({
+      status: 'ok',
+      count: instruments.length,
+      instruments: instruments,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    handleApiError(error, res, 'Instruments API');
+  }
+});
+
 // ===== HEALTH CHECK =====
 
 app.get('/api/health', (req, res) => {
@@ -760,9 +796,9 @@ app.get('/api/health', (req, res) => {
   
   res.json({
     status: 'OK',
-    message: 'TradePro Backend API is running',
+    message: 'TradePro Backend API with Upstox & Yahoo Finance',
     timestamp: new Date().toISOString(),
-    version: '2.1.0',
+    version: '3.0.0',
     environment: process.env.NODE_ENV || 'development',
     uptime: Math.floor(process.uptime()),
     apiKeys: apiKeysStatus,
@@ -773,9 +809,14 @@ app.get('/api/health', (req, res) => {
     features: {
       stockData: true,
       newsData: !!API_KEYS.NEWS_API,
-      chartData: !!(API_KEYS.ALPHA_VANTAGE || API_KEYS.FINNHUB),
-      search: !!API_KEYS.ALPHA_VANTAGE,
-      marketStatus: true
+      chartData: true,
+      search: true,
+      marketStatus: true,
+      upstoxIntegration: !!API_KEYS.UPSTOX_ACCESS_TOKEN,
+      yahooFinance: true
+    },
+    instruments: {
+      upstox: upstoxInstruments.size
     }
   });
 });
@@ -806,6 +847,38 @@ function getCompanyName(symbol) {
     'ULTRACEMCO': 'UltraTech Cement Limited'
   };
   return companies[symbol] || symbol;
+}
+
+function generateRecommendation(stock) {
+  let score = 0;
+  
+  // Price momentum
+  if (stock.changePercent > 3) score += 2;
+  else if (stock.changePercent > 1) score += 1;
+  else if (stock.changePercent < -3) score -= 2;
+  else if (stock.changePercent < -1) score -= 1;
+  
+  // Volume analysis
+  const volumeNum = parseInt(stock.volume?.toString().replace(/[MBK]/g, '') || 0);
+  if (volumeNum > 1000000 && stock.changePercent > 0) score += 1;
+  else if (volumeNum > 1000000 && stock.changePercent < 0) score -= 1;
+  
+  if (score >= 2) return 'STRONG_BUY';
+  if (score >= 1) return 'BUY';
+  if (score <= -2) return 'STRONG_SELL';
+  if (score <= -1) return 'SELL';
+  return 'HOLD';
+}
+
+function formatVolume(volume) {
+  if (!volume || volume === 0) return '0';
+  
+  const num = parseInt(volume) || 0;
+  if (num >= 1e9) return `${(num / 1e9).toFixed(1)}B`;
+  if (num >= 1e6) return `${(num / 1e6).toFixed(1)}M`;
+  if (num >= 1e3) return `${(num / 1e3).toFixed(1)}K`;
+  
+  return num.toString();
 }
 
 function analyzeSentiment(text) {
@@ -869,7 +942,8 @@ app.use((req, res) => {
       'GET /api/news',
       'GET /api/search/stocks',
       'GET /api/chart/:symbol',
-      'GET /api/market/status'
+      'GET /api/market/status',
+      'GET /api/instruments'
     ]
   });
 });
@@ -898,7 +972,7 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 // ===== START SERVER =====
 
 const server = app.listen(PORT, () => {
-  console.log(`🚀 TradePro Backend Server v2.1.0 running on port ${PORT}`);
+  console.log(`🚀 TradePro Backend Server v3.0.0 with Upstox & Yahoo Finance running on port ${PORT}`);
   console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🌐 API Base URL: http://localhost:${PORT}/api`);
   console.log(`💾 Cache enabled with ${Object.keys(CACHE_DURATIONS).length} strategies`);
@@ -909,11 +983,12 @@ const server = app.listen(PORT, () => {
   
   console.log('\n📋 Available Endpoints:');
   console.log('  ✅ GET  /api/health - Health check');
-  console.log('  ✅ POST /api/stocks/batch - Batch stock data');
+  console.log('  ✅ POST /api/stocks/batch - Batch stock data (Upstox + Yahoo)');
   console.log('  ✅ GET  /api/news - Financial news');
-  console.log('  ✅ GET  /api/search/stocks - Stock search');
-  console.log('  ✅ GET  /api/chart/:symbol - Chart data');
+  console.log('  ✅ GET  /api/search/stocks - Stock search (Upstox instruments)');
+  console.log('  ✅ GET  /api/chart/:symbol - Chart data (Yahoo + Upstox)');
   console.log('  ✅ GET  /api/market/status - Market status');
+  console.log('  ✅ GET  /api/instruments - Upstox instruments list');
   
   if (!allKeysValid) {
     console.log('\n⚠️  Some API keys are missing. Check your .env file:');
@@ -921,9 +996,13 @@ const server = app.listen(PORT, () => {
       const status = value && value !== 'demo' ? '✅' : '❌';
       console.log(`  ${status} ${key}`);
     });
+    console.log('\n📖 Setup instructions:');
+    console.log('  1. Get Upstox API access: https://upstox.com/developer/apps');
+    console.log('  2. Get News API key: https://newsapi.org/');
+    console.log('  3. Add to .env file in backend folder');
   }
   
-  console.log('\n🔥 Server ready to handle real API requests!');
+  console.log('\n🔥 Server ready with enhanced APIs and real-time capabilities!');
 });
 
 // Handle server errors
